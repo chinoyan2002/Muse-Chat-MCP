@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildPrompt, parseToolCalls } from '../muse-openai-shim.mjs'
+import { buildPrompt, parseToolCalls, startShim } from '../muse-openai-shim.mjs'
+import { driver } from '../muse-driver.mjs'
 
 const tools = [{
   type: 'function',
@@ -54,4 +55,87 @@ test('includes the executed tool name and result in the next Muse prompt', () =>
   assert.match(prompt, /Find the project directory/)
   assert.match(prompt, /Tool name: shell/)
   assert.match(prompt, /C:\\Users\\User\\Muse-Chat-MCP/)
+})
+
+async function withStubbedShim(reply, run) {
+  const original = driver.chat
+  driver.chat = async () => ({ reply })
+  const server = startShim({ port: 0, host: '127.0.0.1' })
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('listening', resolve)
+      server.once('error', reject)
+    })
+    const address = server.address()
+    return await run(`http://127.0.0.1:${address.port}`)
+  } finally {
+    driver.chat = original
+    await new Promise((resolve) => server.close(resolve))
+  }
+}
+
+test('HTTP non-stream response returns a validated OpenAI tool call', async () => {
+  await withStubbedShim(
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'Where am I?' }],
+          tools,
+        }),
+      })
+      const data = await response.json()
+      assert.equal(response.status, 200)
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'shell')
+    },
+  )
+})
+
+test('HTTP response never forwards an unknown Muse tool name', async () => {
+  await withStubbedShim(
+    '{"tool_calls":[{"name":"muse.shell","arguments":{"command":"Get-Location"}}]}',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'Where am I?' }],
+          tools,
+        }),
+      })
+      const data = await response.json()
+      assert.equal(response.status, 200)
+      assert.equal(data.choices[0].finish_reason, 'stop')
+      assert.equal(data.choices[0].message.tool_calls, undefined)
+      assert.match(data.choices[0].message.content, /muse\\.shell/)
+    },
+  )
+})
+
+test('HTTP SSE response emits OpenAI tool_calls and the matching finish reason', async () => {
+  await withStubbedShim(
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          stream: true,
+          messages: [{ role: 'user', content: 'Where am I?' }],
+          tools,
+        }),
+      })
+      const body = await response.text()
+      assert.equal(response.status, 200)
+      assert.match(body, /"name":"shell"/)
+      assert.match(body, /"finish_reason":"tool_calls"/)
+      assert.match(body, /data: \\[DONE\\]/)
+    },
+  )
 })
