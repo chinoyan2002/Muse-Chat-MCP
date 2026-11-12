@@ -112,7 +112,7 @@ test('HTTP response never forwards an unknown Muse tool name', async () => {
       assert.equal(response.status, 200)
       assert.equal(data.choices[0].finish_reason, 'stop')
       assert.equal(data.choices[0].message.tool_calls, undefined)
-      assert.match(data.choices[0].message.content, /muse\.shell/)
+      assert.ok(data.choices[0].message.content.includes('muse.shell'))
     },
   )
 })
@@ -135,7 +135,7 @@ test('HTTP SSE response emits OpenAI tool_calls and the matching finish reason',
       assert.equal(response.status, 200)
       assert.match(body, /"name":"shell"/)
       assert.match(body, /"finish_reason":"tool_calls"/)
-      assert.match(body, /data: \[DONE\]/)
+      assert.ok(body.includes('data: [DONE]'))
     },
   )
 })
