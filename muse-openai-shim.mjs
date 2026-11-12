@@ -118,7 +118,7 @@ function validateArguments(args, schema, name) {
 export function parseToolCalls(text, tools = [], toolChoice = 'auto') {
   if (!text) return null
   const trimmed = text.trim()
-  const fenced = trimmed.match(/```(?:json)?\\s*([\\s\\S]*?)```/i)
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
   const candidate = (fenced ? fenced[1] : trimmed).trim()
   if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null
   let obj
