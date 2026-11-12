@@ -291,7 +291,7 @@ async function handleChat(req, res, body) {
     // Non-streaming
     const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
     if (r.error && !r.reply) throw new Error(r.error)
-    const calls = wantTools ? parseToolCalls(r.reply) : null
+    const calls = wantTools ? parseToolCalls(r.reply, body.tools, body.tool_choice) : null
 
     const message = calls && calls.length
       ? { role: 'assistant', content: null, tool_calls: calls }
