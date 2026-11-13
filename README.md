@@ -213,7 +213,8 @@ for chunk in r:
 - **Attachments** — send images/video via OpenAI multimodal content (`{"type":"image_url","image_url":{"url":…}}`) or a top-level `files` array (local paths / URLs / data-URIs). Muse sees them like a normal chat attachment.
 - **Plain message** — the shim sends the latest user message **verbatim**: no `### USER/### ASSISTANT` role markers and no "continue the conversation" wrapper. Muse flags roleplay-style wrappers as prompt-injection and refuses them, so the bridge never adds any. Prior context comes from Muse's own thread.
 - **Sessions** — target a chat with header `x-muse-chat: <title|index|url>` (or body `chat`); read chats via `GET /v1/muse/chats` and `GET /v1/muse/chat`.
-- **One thread per conversation** — with `MUSE_THREAD_MODE=session` (default) the shim binds each host conversation to its own Muse Side chat, keyed by the conversation's system prompt plus first user message, and reuses it on later turns. Bindings persist in `.muse-threads.json` (git-ignored). `single` restores the old "whatever thread is open" behavior; `new` starts a fresh chat per request.
+- **One thread per conversation** — with `MUSE_THREAD_MODE=session` (default) the shim binds each host conversation to its own Muse Side chat. OpenCode sends `x-opencode-session` on every request, so the key is that session id; clients without it fall back to a hash of the system prompt plus first user message. Bindings persist in `.muse-threads.json` (git-ignored). `single` restores the old "whatever thread is open" behavior; `new` starts a fresh chat per request.
+- **Fail closed** — if the "new side chat" control does not open a fresh thread, the request fails with a 5xx instead of quietly sending into the chat that is already open. Two host conversations never share one Muse thread.
 - **Isolation guard** — Muse recalls facts across chats, so a separate chat alone does not stop memory bleed. Session-routed prompts also carry a short instruction to answer only from the current conversation.
 - **Headers** — `x-muse-thread: new` (start a fresh chat), `x-muse-timeout-ms`.
 
@@ -360,7 +361,8 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 ## Limitations
 
 - **Muse remembers across chats.** Separate Side chats hide each other's transcript, but Muse can still recall facts from other conversations; the shim therefore adds an isolation guard to every session-routed prompt. Treat it as a strong hint, not a hard boundary.
-- **One conversation per thread.** Multi-thread support relies on Muse's "new side chat" control; `muse_dump_dom` and `MUSE_THREAD_MODE=single` are the escape hatches if the UI changes.
+- **One conversation per thread.** Multi-thread support relies on Muse's "new side chat" control; if it changes, session-routed requests fail closed rather than sharing a chat. `muse_dump_dom` and `MUSE_THREAD_MODE=single` are the escape hatches.
+- **Existing sessions get a new thread once.** Bindings created before the session-id switch were keyed by prompt hash; those keys are no longer used, so an ongoing OpenCode session starts a fresh Muse Side chat on its next message and loses Muse-side history.
 - **Serialized** — one browser, requests run one at a time (auto-queued).
 - **Tool calling is prompt-injected** — best-effort, not a native function-calling API.
 - **DOM-driven** — a Muse UI change can break selectors; `muse_dump_dom` is the escape hatch.

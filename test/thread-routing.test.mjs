@@ -9,21 +9,28 @@ import { driver } from '../muse-driver.mjs'
 const THREAD_A = 'aaaaaaaa-1111-2222-3333-444444444444'
 const THREAD_B = 'bbbbbbbb-1111-2222-3333-444444444444'
 
-async function withShim(run) {
+async function withShim(run, driverImpl) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muse-route-'))
   process.env.MUSE_THREAD_MAP = path.join(dir, '.muse-threads.json')
   process.env.MUSE_THREAD_MODE = 'session'
 
   const calls = []
   const original = driver.chat
-  driver.chat = async (prompt, opts = {}) => {
+  let created = 0
+  driver.chat = driverImpl || (async (prompt, opts = {}) => {
     calls.push({ prompt, opts })
     await new Promise((resolve) => setTimeout(resolve, 25))
-    const threadUrl = opts.newThread || opts.chat === undefined
-      ? `https://muse.ai/thread/${opts.newThread ? THREAD_A : THREAD_B}`
-      : `https://muse.ai/thread/${opts.chat}`
-    return { reply: 'ok', threadUrl }
-  }
+    // Every fresh chat gets its own uuid so tests can tell threads apart.
+    if (opts.newThread) {
+      created += 1
+      const id = created === 1 ? THREAD_A : `${String(created).repeat(8)}-1111-2222-3333-444444444444`
+      return { reply: 'ok', threadUrl: `https://muse.ai/thread/${id}` }
+    }
+    return {
+      reply: 'ok',
+      threadUrl: `https://muse.ai/thread/${opts.chat === undefined ? THREAD_B : opts.chat}`,
+    }
+  })
 
   const server = startShim({ port: 0, host: '127.0.0.1' })
   try {
@@ -90,6 +97,65 @@ test('an explicit x-muse-chat header wins over session routing', async () => {
     await send(base, 'session one', { 'x-muse-chat': THREAD_B })
     assert.equal(calls[0].opts.chat, THREAD_B)
     assert.equal(calls[0].opts.newThread, false)
+  })
+})
+
+test('routes by the OpenCode session header, not by the first message', async () => {
+  await withShim(async ({ base, calls }) => {
+    await send(base, 'first request', { 'x-opencode-session': 'ses_one' })
+    await send(base, 'a different opening text', { 'x-opencode-session': 'ses_one' })
+    assert.equal(calls[0].opts.newThread, true)
+    assert.equal(calls[1].opts.newThread, false)
+    assert.equal(calls[1].opts.chat, THREAD_A)
+  })
+})
+
+test('two sessions with identical text still get separate threads', async () => {
+  await withShim(async ({ base, calls }) => {
+    await send(base, 'same text', { 'x-opencode-session': 'ses_one' })
+    await send(base, 'same text', { 'x-opencode-session': 'ses_two' })
+    assert.equal(calls[0].opts.newThread, true)
+    assert.equal(calls[1].opts.newThread, true)
+  })
+})
+
+test('the title generator uses its own thread instead of a conversation thread', async () => {
+  await withShim(async ({ base, calls, dir }) => {
+    const titleMessages = [
+      { role: 'system', content: 'You name conversations so the user can find them later in a list of past sessions.' },
+      { role: 'user', content: 'hello' },
+    ]
+    await fetch(base + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-opencode-session': 'ses_one' },
+      body: JSON.stringify({ model: 'muse', messages: titleMessages }),
+    })
+    await send(base, 'hello', { 'x-opencode-session': 'ses_one' })
+
+    assert.equal(calls[0].opts.newThread, true)
+    assert.equal(calls[1].opts.newThread, true)
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, '.muse-threads.json'), 'utf8'))
+    assert.ok(saved.threads['opencode:titles'])
+    assert.ok(saved.threads['session:ses_one'])
+  })
+})
+
+test('a failed side-chat creation never falls back to the current thread', async () => {
+  const calls = []
+  await withShim(async ({ base, dir }) => {
+    await send(base, 'session one')
+    await send(base, 'session one')
+    // Both attempts must ask for a new chat: reusing "whatever is open" is the
+    // fail-open path this guard exists to prevent.
+    assert.deepEqual(calls.map((c) => c.opts.newThread), [true, true])
+    const file = path.join(dir, '.muse-threads.json')
+    const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { threads: {} }
+    assert.equal(Object.keys(saved.threads).length, 0)
+  }, async (prompt, opts = {}) => {
+    calls.push({ prompt, opts })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    // Looks like success but carries no thread uuid.
+    return { reply: 'ok', threadUrl: 'https://muse.ai/' }
   })
 })
 

@@ -46,7 +46,6 @@ const log = (...a) => console.error(`[muse-shim ${new Date().toISOString()}]`, .
 // single: every request uses whatever thread is currently open (old behavior)
 // new:    every request starts a fresh Side chat
 const DEFAULT_THREAD_MAP = path.join(path.dirname(fileURLToPath(import.meta.url)), '.muse-threads.json')
-const threadlessKeys = new Set()
 const pendingCreates = new Map() // threadKey -> Promise resolved once its Side chat exists
 let cachedStore = null
 
@@ -68,6 +67,25 @@ function threadStore() {
   if (!cachedStore || cachedStore.file !== file) cachedStore = createThreadStore(file)
   return cachedStore
 }
+
+// OpenCode sends a stable session id on every request; preferring it over a hash of
+// the prompt keeps one conversation on one thread even when the system prompt changes
+// (compaction, model switch) and stops two sessions with the same opening line from
+// sharing a thread. Falls back to hashing for other clients.
+function hostSessionId(req) {
+  const raw = req.headers['x-opencode-session']
+    || req.headers['x-opencode-session-id']
+    || req.headers['x-session-id']
+  const s = typeof raw === 'string' ? raw.trim() : ''
+  return s || null
+}
+
+// OpenCode's title generator is a separate request; giving it a fixed key keeps its
+// prompts out of the conversation threads instead of polluting them.
+const TITLES_KEY = 'opencode:titles'
+const isTitleRequest = (messages) => (messages || []).some(
+  (m) => m.role === 'system' && /^You name conversations/i.test(textOf(m.content)),
+)
 const rid = () => `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 const now = () => Math.floor(Date.now() / 1000)
 const approxTokens = (s) => Math.max(1, Math.ceil((s || '').length / 4))
@@ -146,40 +164,69 @@ function validateArguments(args, schema, name) {
   return true
 }
 
-function parseJsonLenient(text) {
-  try {
-    return JSON.parse(text)
-  } catch {
-    // Muse sometimes emits Windows paths with single backslashes ("C:\Users\..."), which
-    // is invalid JSON. Re-escape every backslash inside a string that is not already
-    // `\\` or `\"`, then retry once.
-    let out = ''
-    let inString = false
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i]
-      if (ch === '"') {
-        inString = !inString
-        out += ch
-        continue
-      }
-      if (inString && ch === '\\') {
-        const next = text[i + 1]
-        if (next === '"' || next === '\\') {
-          out += ch + next
-          i++
-          continue
-        }
-        out += '\\\\'
-        continue
-      }
+/** Re-escape every backslash that is not already `\\` or `\"`, then parse. */
+function parseWithEscapedBackslashes(text) {
+  let out = ''
+  let inString = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '"') {
+      inString = !inString
       out += ch
+      continue
     }
-    try {
-      return JSON.parse(out)
-    } catch {
-      return null
+    if (inString && ch === '\\') {
+      const next = text[i + 1]
+      if (next === '"' || next === '\\') {
+        out += ch + next
+        i++
+        continue
+      }
+      out += '\\\\'
+      continue
     }
+    out += ch
   }
+  try {
+    return JSON.parse(out)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `"C:\temp\new"` is valid JSON, so `\t` and `\n` silently become control
+ * characters and the path no longer exists on disk. Such a value is treated as a
+ * corrupted Windows path and re-parsed with literal backslashes.
+ */
+function hasCorruptedWindowsPath(value) {
+  const CONTROL = /[\u0000-\u001f]/
+  const DRIVE = /^[A-Za-z]:/
+  const UNC = /^\\\\/
+  const visit = (v) => {
+    if (typeof v === 'string') return CONTROL.test(v) && (DRIVE.test(v) || UNC.test(v))
+    if (Array.isArray(v)) return v.some(visit)
+    if (v && typeof v === 'object') return Object.values(v).some(visit)
+    return false
+  }
+  return visit(value)
+}
+
+function parseJsonLenient(text) {
+  let parsed = null
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    parsed = null
+  }
+  if (parsed && hasCorruptedWindowsPath(parsed)) {
+    const repaired = parseWithEscapedBackslashes(text)
+    if (repaired) return repaired
+  }
+  if (parsed) return parsed
+  // Muse sometimes emits Windows paths with single backslashes ("C:\Users\..."), which
+  // is invalid JSON when the escape is unknown; re-escape and retry once.
+  return parseWithEscapedBackslashes(text)
 }
 
 const looksLikeToolCallAttempt = (text) => /"?(?:tool_calls|toolCalls)"?\s*:/i.test(String(text || ''))
@@ -334,6 +381,9 @@ function sendError(res, status, message, type = 'invalid_request_error', code = 
  * corrective prompt. Bounded to one retry so a confused model cannot loop.
  */
 async function requestToolCalls(prompt, opts, body) {
+  // tool_choice=required (or a forced function) makes a prose answer a contract violation.
+  const requiresTool = body.tool_choice === 'required'
+    || (body.tool_choice !== null && typeof body.tool_choice === 'object')
   const first = await driver.chat(prompt, opts)
   if (first.error && !first.reply) return { reply: first.reply, calls: null, error: first.error, threadUrl: first.threadUrl }
 
@@ -352,6 +402,14 @@ async function requestToolCalls(prompt, opts, body) {
       'In JSON strings escape every Windows backslash as \\\\ or use forward slashes.',
       'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
     ].join('\n')
+  } else if (requiresTool) {
+    log('retrying because tool_choice requires a tool call')
+    correction = [
+      'The caller requires a tool call for this turn, but your previous reply contained none.',
+      'Reply with ONLY {"tool_calls":[{"name":"EXACT_TOOL_NAME","arguments":{}}]} using the schemas below.',
+      'Use the exact property names from the schema and escape every Windows backslash as \\\\ or use forward slashes.',
+      'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
+    ].join('\n')
   } else if (looksLikeAccessRefusal(first.reply) && !hasToolResultsAfterLastUser(body.messages)) {
     log('retrying prose refusal:', String(first.reply || '').slice(0, 200).replace(/\s+/g, ' '))
     correction = [
@@ -365,8 +423,23 @@ async function requestToolCalls(prompt, opts, body) {
   if (!correction) return { reply: first.reply, calls: null, error: null, threadUrl: first.threadUrl }
 
   const second = await driver.chat(correction, { ...opts, newThread: false })
-  if (second.error && !second.reply) return { reply: first.reply, calls: null, error: null, threadUrl: second.threadUrl || first.threadUrl }
+  if (second.error && !second.reply) {
+    return {
+      reply: first.reply,
+      calls: null,
+      error: requiresTool ? 'the model did not return a tool call required by tool_choice' : null,
+      threadUrl: second.threadUrl || first.threadUrl,
+    }
+  }
   const retried = parseToolCallsDetailed(second.reply, body.tools, body.tool_choice)
+  if (!retried.calls && requiresTool) {
+    return {
+      reply: '',
+      calls: null,
+      error: `tool_choice requires a tool call, but the model answered with text: ${String(second.reply || '').slice(0, 200)}`,
+      threadUrl: second.threadUrl || first.threadUrl,
+    }
+  }
   return {
     reply: retried.calls ? second.reply : second.reply || first.reply,
     calls: retried.calls,
@@ -385,6 +458,16 @@ async function handleChat(req, res, body) {
   const model = String(body.model)
   const id = rid()
   const created = now()
+  if (process.env.MUSE_SHIM_DEBUG) {
+    const system = (body.messages || []).find((m) => m.role === 'system')
+    log('debug request:', JSON.stringify({
+      headers: Object.keys(req.headers).sort(),
+      bodyKeys: Object.keys(body).sort(),
+      user: body.user,
+      session: body.session_id || body.sessionId || body.session,
+      systemHead: String(textOf(system && system.content)).slice(0, 400),
+    }))
+  }
   const timeoutMs = Number(req.headers['x-muse-timeout-ms']) || DEFAULT_TIMEOUT_MS
   // Conversation -> thread routing. `x-muse-thread: new` forces a fresh Side chat,
   // `x-muse-chat` names one explicitly, and MUSE_THREAD_MODE picks the default.
@@ -407,7 +490,10 @@ async function handleChat(req, res, body) {
   let chatTarget = chat
   let releaseCreate = null
   if (!explicitThread && mode === 'session') {
-    threadKey = deriveThreadKey(body.messages)
+    const hostSession = hostSessionId(req)
+    threadKey = isTitleRequest(body.messages)
+      ? TITLES_KEY
+      : (hostSession ? `session:${hostSession}` : deriveThreadKey(body.messages))
     if (threadKey) {
       const known = wantNewThread ? null : threadStore().get(threadKey)
       if (known) {
@@ -419,7 +505,9 @@ async function handleChat(req, res, body) {
         const bound = threadStore().get(threadKey)
         if (bound) chatTarget = bound
         else wantNewThread = true
-      } else if (!threadlessKeys.has(threadKey)) {
+      } else {
+        // Unknown conversation: always open a fresh Side chat. Never fall back to the
+        // currently open chat, otherwise two host conversations would share a context.
         wantNewThread = true
         let release
         const pending = new Promise((resolve) => { release = resolve })
@@ -450,8 +538,9 @@ async function handleChat(req, res, body) {
         return
       }
       if (wantNewThread) {
-        threadlessKeys.add(threadKey)
-        log(`no thread id for ${threadKey}; staying on the current thread`)
+        // Leave the key unbound: the next turn opens another fresh chat, which keeps
+        // conversations isolated (at the cost of continuity) instead of sharing one.
+        log(`WARNING: no thread id for ${threadKey}; conversation stays unbound`)
       }
     } finally {
       if (releaseCreate) releaseCreate()

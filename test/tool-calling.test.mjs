@@ -57,6 +57,27 @@ test('includes the executed tool name and result in the next Muse prompt', () =>
   assert.match(prompt, /C:\\Users\\User\\Muse-Chat-MCP/)
 })
 
+test('includes every parallel tool result, not just the first', () => {
+  const prompt = buildPrompt({
+    tools,
+    messages: [
+      { role: 'user', content: 'Inspect the project' },
+      {
+        role: 'assistant',
+        tool_calls: [
+          { id: 'call_a', function: { name: 'read', arguments: '{"filePath":"a"}' } },
+          { id: 'call_b', function: { name: 'glob', arguments: '{"pattern":"*"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_a', content: 'RESULT_ALPHA' },
+      { role: 'tool', tool_call_id: 'call_b', content: 'RESULT_BETA' },
+    ],
+  })
+  assert.match(prompt, /Tool name: read[\s\S]*RESULT_ALPHA/)
+  assert.match(prompt, /Tool name: glob[\s\S]*RESULT_BETA/)
+  assert.match(prompt, /Inspect the project/)
+})
+
 test('accepts unescaped Windows backslashes in tool arguments', () => {
   const calls = parseToolCalls(
     '{"tool_calls":[{"name":"shell","arguments":{"command":"echo C:\\Users\\User\\Muse-Chat-MCP"}}]}',
@@ -199,6 +220,83 @@ test('does not retry when the turn already contains a tool result', async () => 
     },
   )
   assert.equal(prompts.length, 1)
+})
+
+test('tool_choice=required retries a prose answer and returns the tool call', async () => {
+  const replies = [
+    'I will answer directly: 42.',
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}',
+  ]
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return replies[Math.min(prompts.length, replies.length) - 1] },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'show the location' }],
+          tools,
+          tool_choice: 'required',
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'shell')
+    },
+  )
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1], /requires a tool call/i)
+})
+
+test('tool_choice=required fails the request when no tool call is produced', async () => {
+  await withStubbedShim(
+    'I would rather answer in prose.',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'show the location' }],
+          tools,
+          tool_choice: 'required',
+        }),
+      })
+      assert.equal(response.status, 502)
+      const data = await response.json()
+      assert.match(data.error.message, /requires a tool call/i)
+    },
+  )
+})
+
+test('keeps literal backslashes when JSON escapes would corrupt a Windows path', () => {
+  const readTools = [{
+    type: 'function',
+    function: {
+      name: 'read',
+      parameters: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] },
+    },
+  }]
+  // In the model's reply these are single backslashes, so \t and \n are valid JSON
+  // escapes that would turn into a tab and a newline.
+  const reply = '{"tool_calls":[{"name":"read","arguments":{"filePath":"C:\\temp\\new"}}]}'
+  const calls = parseToolCalls(reply, readTools)
+  assert.equal(JSON.parse(calls[0].function.arguments).filePath, 'C:\\temp\\new')
+})
+
+test('preserves a real newline in a non-path argument', () => {
+  const shellTools = [{
+    type: 'function',
+    function: {
+      name: 'shell',
+      parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+    },
+  }]
+  const reply = '{"tool_calls":[{"name":"shell","arguments":{"command":"echo a\\necho b"}}]}'
+  const calls = parseToolCalls(reply, shellTools)
+  assert.equal(JSON.parse(calls[0].function.arguments).command, 'echo a\necho b')
 })
 
 async function withStubbedShim(reply, run) {
