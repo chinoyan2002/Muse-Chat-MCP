@@ -38,7 +38,8 @@ const MODEL_IDS = (process.env.MUSE_SHIM_MODELS || 'muse-spark-1.3,muse-spark-1.
   .map((s) => s.trim())
   .filter(Boolean)
 
-const log = (...a) => console.error('[muse-shim]', ...a)
+// Timestamps matter when correlating shim activity with host sessions after the fact.
+const log = (...a) => console.error(`[muse-shim ${new Date().toISOString()}]`, ...a)
 
 // --- conversation -> Muse thread routing -----------------------------------
 // session (default): one host conversation gets its own Muse Side chat
@@ -46,6 +47,7 @@ const log = (...a) => console.error('[muse-shim]', ...a)
 // new:    every request starts a fresh Side chat
 const DEFAULT_THREAD_MAP = path.join(path.dirname(fileURLToPath(import.meta.url)), '.muse-threads.json')
 const threadlessKeys = new Set()
+const pendingCreates = new Map() // threadKey -> Promise resolved once its Side chat exists
 let cachedStore = null
 
 // Muse keeps memory across chats, so a separate Side chat alone is not enough.
@@ -181,6 +183,17 @@ function parseJsonLenient(text) {
 }
 
 const looksLikeToolCallAttempt = (text) => /"?(?:tool_calls|toolCalls)"?\s*:/i.test(String(text || ''))
+
+// Muse sometimes answers "I cannot read files" instead of emitting a tool call, even
+// though the host does the file access. That is a refusal, not a result.
+const looksLikeAccessRefusal = (text) =>
+  /no such file or directory|cannot (?:access|read)|can(?:no|')t (?:access|read)|unable to (?:access|read)|permission denied|無法(?:讀取|存取|取得|列出)|沒有(?:權限|辦法)|讀不到/i.test(String(text || ''))
+
+const hasToolResultsAfterLastUser = (messages) => {
+  const list = Array.isArray(messages) ? messages : []
+  const lastUser = list.map((m) => m.role).lastIndexOf('user')
+  return list.slice(lastUser + 1).some((m) => m.role === 'tool')
+}
 
 function requiredKeys(schema) {
   return Array.isArray(schema?.required) ? schema.required : []
@@ -325,18 +338,32 @@ async function requestToolCalls(prompt, opts, body) {
   if (first.error && !first.reply) return { reply: first.reply, calls: null, error: first.error, threadUrl: first.threadUrl }
 
   const parsed = parseToolCallsDetailed(first.reply, body.tools, body.tool_choice)
-  if (parsed.calls || !parsed.attempted) {
-    return { reply: first.reply, calls: parsed.calls, error: null, threadUrl: first.threadUrl }
-  }
+  if (parsed.calls) return { reply: first.reply, calls: parsed.calls, error: null, threadUrl: first.threadUrl }
 
-  log('retrying rejected tool call:', parsed.error)
-  const correction = [
-    `Your previous reply was rejected by the tool bridge: ${parsed.error}.`,
-    'Reply again with ONLY the corrected tool_calls JSON.',
-    'Use the exact property names and JSON types from the schema.',
-    'In JSON strings escape every Windows backslash as \\\\ or use forward slashes.',
-    'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
-  ].join('\n')
+  // Two recoverable failures share one bounded retry: a rejected tool call, and a
+  // prose refusal to touch files when no tool has run yet.
+  let correction = null
+  if (parsed.attempted) {
+    log('retrying rejected tool call:', parsed.error, '| reply head:', String(first.reply || '').slice(0, 400).replace(/\s+/g, ' '))
+    correction = [
+      `Your previous reply was rejected by the tool bridge: ${parsed.error}.`,
+      'Reply again with ONLY the corrected tool_calls JSON.',
+      'Use the exact property names and JSON types from the schema.',
+      'In JSON strings escape every Windows backslash as \\\\ or use forward slashes.',
+      'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
+    ].join('\n')
+  } else if (looksLikeAccessRefusal(first.reply) && !hasToolResultsAfterLastUser(body.messages)) {
+    log('retrying prose refusal:', String(first.reply || '').slice(0, 200).replace(/\s+/g, ' '))
+    correction = [
+      'Your previous reply said you could not read files or the machine, but no tool has run yet.',
+      'The host application executes tools; you only emit JSON. Never claim you cannot access a file, a directory, or the system.',
+      'If a listed tool can answer the request, reply with ONLY {"tool_calls":[{"name":"EXACT_TOOL_NAME","arguments":{}}]}.',
+      'Use the exact property names from the schema and escape every Windows backslash as \\\\ or use forward slashes.',
+      'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
+    ].join('\n')
+  }
+  if (!correction) return { reply: first.reply, calls: null, error: null, threadUrl: first.threadUrl }
+
   const second = await driver.chat(correction, { ...opts, newThread: false })
   if (second.error && !second.reply) return { reply: first.reply, calls: null, error: null, threadUrl: second.threadUrl || first.threadUrl }
   const retried = parseToolCallsDetailed(second.reply, body.tools, body.tool_choice)
@@ -378,12 +405,30 @@ async function handleChat(req, res, body) {
   let threadKey = null
   let wantNewThread = newThread
   let chatTarget = chat
+  let releaseCreate = null
   if (!explicitThread && mode === 'session') {
     threadKey = deriveThreadKey(body.messages)
     if (threadKey) {
       const known = wantNewThread ? null : threadStore().get(threadKey)
-      if (known) chatTarget = known
-      else if (!threadlessKeys.has(threadKey)) wantNewThread = true
+      if (known) {
+        chatTarget = known
+      } else if (pendingCreates.has(threadKey)) {
+        // A sibling request is already creating this conversation's Side chat.
+        // Queue behind it instead of creating a second, orphaned thread.
+        await pendingCreates.get(threadKey)
+        const bound = threadStore().get(threadKey)
+        if (bound) chatTarget = bound
+        else wantNewThread = true
+      } else if (!threadlessKeys.has(threadKey)) {
+        wantNewThread = true
+        let release
+        const pending = new Promise((resolve) => { release = resolve })
+        pendingCreates.set(threadKey, pending)
+        releaseCreate = () => {
+          if (pendingCreates.get(threadKey) === pending) pendingCreates.delete(threadKey)
+          release()
+        }
+      }
     }
   } else if (!explicitThread && mode === 'new') {
     wantNewThread = true
@@ -396,16 +441,20 @@ async function handleChat(req, res, body) {
   // Remember the thread once the driver knows its URL. A fresh Side chat only gets
   // its /thread/<uuid> after the first message, so this runs after the reply.
   const bindThread = (result) => {
-    if (!threadKey) return
-    const threadId = extractThreadId(result && result.threadUrl)
-    if (threadId) {
-      threadStore().set(threadKey, threadId)
-      if (wantNewThread) log(`bound conversation ${threadKey} to thread ${threadId}`)
-      return
-    }
-    if (wantNewThread) {
-      threadlessKeys.add(threadKey)
-      log(`no thread id for ${threadKey}; staying on the current thread`)
+    try {
+      if (!threadKey) return
+      const threadId = extractThreadId(result && result.threadUrl)
+      if (threadId) {
+        threadStore().set(threadKey, threadId)
+        if (wantNewThread) log(`bound conversation ${threadKey} to thread ${threadId}`)
+        return
+      }
+      if (wantNewThread) {
+        threadlessKeys.add(threadKey)
+        log(`no thread id for ${threadKey}; staying on the current thread`)
+      }
+    } finally {
+      if (releaseCreate) releaseCreate()
     }
   }
 
@@ -487,6 +536,7 @@ async function handleChat(req, res, body) {
     }))
   } catch (err) {
     log('error:', err && err.message)
+    if (releaseCreate) releaseCreate()
     sendError(res, 502, `Muse error: ${err && err.message ? err.message : String(err)}`, 'api_error')
   }
 }

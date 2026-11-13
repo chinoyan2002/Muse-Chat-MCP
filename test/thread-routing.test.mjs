@@ -18,6 +18,7 @@ async function withShim(run) {
   const original = driver.chat
   driver.chat = async (prompt, opts = {}) => {
     calls.push({ prompt, opts })
+    await new Promise((resolve) => setTimeout(resolve, 25))
     const threadUrl = opts.newThread || opts.chat === undefined
       ? `https://muse.ai/thread/${opts.newThread ? THREAD_A : THREAD_B}`
       : `https://muse.ai/thread/${opts.chat}`
@@ -105,5 +106,13 @@ test('single mode leaves the prompt unguarded', async () => {
     process.env.MUSE_THREAD_MODE = 'single'
     await send(base, 'session one')
     assert.doesNotMatch(calls[0].prompt, /Independent task/)
+  })
+})
+
+test('concurrent first requests create only one side chat', async () => {
+  await withShim(async ({ base, calls }) => {
+    await Promise.all([send(base, 'session one'), send(base, 'session one')])
+    assert.equal(calls.filter((c) => c.opts.newThread === true).length, 1)
+    assert.equal(calls.filter((c) => c.opts.chat === THREAD_A).length, 1)
   })
 })

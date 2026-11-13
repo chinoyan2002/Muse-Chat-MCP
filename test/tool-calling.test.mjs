@@ -106,6 +106,101 @@ test('retries once with a corrective prompt when a required property is missing'
   assert.match(prompts[1], /rejected/)
 })
 
+test('recovers when Muse claims it cannot read files instead of calling a tool', async () => {
+  const readTool = {
+    type: 'function',
+    function: {
+      name: 'read',
+      description: 'Read a file or directory from disk',
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
+    },
+  }
+  const replies = [
+    '現象：無法讀取本地工作目錄，No such file or directory。',
+    '{"tool_calls":[{"name":"read","arguments":{"filePath":"C:/Users/User/Documents"}}]}',
+  ]
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return replies[Math.min(prompts.length, replies.length) - 1] },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: '請讀取目前工作目錄' }],
+          tools: [readTool],
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'read')
+    },
+  )
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1], /Never claim you cannot access/i)
+})
+
+test('does not retry a plain prose answer that mentions no access failure', async () => {
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return '目前是星期三。' },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: '今天星期幾？' }],
+          tools: [tools[0]],
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'stop')
+      assert.equal(data.choices[0].message.content, '目前是星期三。')
+    },
+  )
+  assert.equal(prompts.length, 1)
+})
+
+test('does not retry when the turn already contains a tool result', async () => {
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return 'No such file or directory：該檔案不存在。' },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [
+            { role: 'user', content: '讀取 missing.txt' },
+            {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"filePath":"missing.txt"}' } }],
+            },
+            { role: 'tool', tool_call_id: 'call_1', content: 'No such file or directory' },
+          ],
+          tools: [{
+            type: 'function',
+            function: {
+              name: 'read',
+              parameters: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] },
+            },
+          }],
+        }),
+      })
+      await response.json()
+    },
+  )
+  assert.equal(prompts.length, 1)
+})
+
 async function withStubbedShim(reply, run) {
   const original = driver.chat
   driver.chat = async (prompt) => ({ reply: typeof reply === 'function' ? reply(prompt) : reply })

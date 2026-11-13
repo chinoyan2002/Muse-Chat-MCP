@@ -224,6 +224,15 @@ async function main() {
   process.stdin.on('close', shutdown)
 }
 
+// A background shim that dies silently leaves no evidence; log the stack and keep
+// serving, because losing one request is cheaper than dropping the whole service.
+process.on('uncaughtException', (err) => {
+  console.error('[muse-mcp] uncaught exception:', err && err.stack ? err.stack : err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[muse-mcp] unhandled rejection:', reason && reason.stack ? reason.stack : reason)
+})
+
 main().catch((err) => {
   log('fatal:', err)
   process.exit(1)
