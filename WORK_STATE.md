@@ -10,7 +10,7 @@
 | Branch | `fix/opencode-tool-calling` |
 | 程式提交 | `8e1d816`（`fix(shim): key threads by the unique session id and fail closed`） |
 | 文件提交 | 本次（`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md`）；以 `git log -1` 為準 |
-| 追蹤分支 | `fork/fix/opencode-tool-calling`（push 後才同步） |
+| 追蹤分支 | `fork/fix/opencode-tool-calling`（遠端 HEAD `31134f4`） |
 | 未提交 | `muse-openai-shim.mjs`、`package.json`、`package-lock.json`（新）、`.gitignore`、workflow、`test/thread-routing.test.mjs`、`test/tool-calling.test.mjs`、`test/sse-errors.test.mjs`（新）、`test/mcp-schema.test.mjs`（新）、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md`、`acceptance-*.mjs`、`muse-login.mjs` |
 
 ## 最後一個 VERIFIED 任務
@@ -43,7 +43,7 @@
 | T16 | VERIFIED | fail-closed 測試補強 |
 | T17 | VERIFIED | 遞迴 JSON Schema 子集合 |
 | T18 | VERIFIED | 依賴漏洞與 lockfile |
-| T19 | IN_PROGRESS | CI matrix 已改，未 push 未執行 |
+| T19 | VERIFIED | CI matrix 已改並實跑成功（run 43483204976，四組合全過） |
 | T20 | VERIFIED | README 同步 |
 | T21 | VERIFIED | 測試埠不穩定已修正（探測＋重綁、回歸測試） |
 
@@ -56,6 +56,7 @@
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `git diff --check` | 無空白錯誤 |
+| GitHub Actions（commit `31134f4`，run [43483204976](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43483204976)） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | 路徑解析實測 | naive JSON.parse 得到 char codes 67,58,9,101…（TAB、LF）；shim 得 `C:\temp\new` |
 | CLI 兩輪（新 session，上一輪） | `OK` → `FRESH-900`，同一 thread |
 | `acceptance-threads.mjs`（上一輪） | 4 項全 true（`E:\Temp\opencode\accept-threads-review.log`） |

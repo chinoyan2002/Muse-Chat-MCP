@@ -35,9 +35,9 @@
 | T16 | 第二輪審查 3：fail-closed 測試改用真實錯誤契約 | VERIFIED | 502＋Map 無新增＋重試仍 newThread；串流結果不得綁舊 thread |
 | T17 | 第二輪審查 4：遞迴 JSON Schema 子集合 | VERIFIED | `tool-calling` 巢狀／範圍／enum 案例 |
 | T18 | 第二輪審查 5：依賴漏洞與 lockfile | VERIFIED | `zod@4.6.7`、`npm ci --dry-run` 0、audit 0 |
-| T19 | 第二輪審查 6：CI Node 22/24 × Ubuntu/Windows | IN_PROGRESS | workflow 已改；**未 push，Actions 未執行** |
+| T19 | 第二輪審查 6：CI Node 22/24 × Ubuntu/Windows | VERIFIED | run 43483204976：4/4 jobs success |
 | T20 | 第二輪審查 8：README 同步 | VERIFIED | 已更新 session id、SSE 錯誤、schema、測試數 |
-| T21 | 測試埠不穩定（fetch 封鎖埠） | VERIFIED | 探測 `/v1/models` 後重綁；`test/shim-port.test.mjs` 回歸測試；連續 28 次全過 |
+| T21 | 測試埠不穩定（fetch 封鎖埠） | VERIFIED | 探測 `/v1/models` 後重綁；`test/shim-port.test.mjs` 回歸測試；最終版連續 10 次全過 |
 
 ## 3. 已知限制
 

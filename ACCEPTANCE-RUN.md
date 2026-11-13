@@ -220,16 +220,16 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 
 | 審查項 | 修正內容 | 位置 | 驗證 |
 |---|---|---|---|
-| 1 P1 Session ID 順序 | 只接受 `x-opencode-session-id` 或 `x-muse-session-id`；不再讀 affinity（`x-opencode-session`、`x-session-id`）；沒有唯一 id 時回 400 `missing_session_id`，不再退回 prompt 雜湊；舊雜湊需 `MUSE_THREAD_KEY=hash` 才啟用；`opencode:titles` 維持獨立 | `muse-openai-shim.mjs:75-92`、`:498-540` | `thread-routing` A–G 共 7 項 |
-| 2 P1 SSE 錯誤 | SSE 標頭延後到第一個可送出的位元組；在那之前的失敗（建 thread、driver、tool_choice）回真正的 5xx JSON；已開始串流後失敗則送 `data: {"error":…}` + `[DONE]`，正常結束 | `muse-openai-shim.mjs:610-660`、`:700-716` | `sse-errors` 6 項（含正常串流仍只有一個 `finish_reason` 與 `[DONE]`） |
+| 1 P1 Session ID 順序 | 只接受 `x-opencode-session-id` 或 `x-muse-session-id`；不再讀 affinity（`x-opencode-session`、`x-session-id`）；沒有唯一 id 時回 400 `missing_session_id`，不再退回 prompt 雜湊；舊雜湊需 `MUSE_THREAD_KEY=hash` 才啟用；`opencode:titles` 維持獨立 | `muse-openai-shim.mjs:76-88`、`:572-620` | `thread-routing` A–G 共 7 項 |
+| 2 P1 SSE 錯誤 | SSE 標頭延後到第一個可送出的位元組；在那之前的失敗（建 thread、driver、tool_choice）回真正的 5xx JSON；已開始串流後失敗則送 `data: {"error":…}` + `[DONE]`，正常結束 | `muse-openai-shim.mjs:648-719`、`:741-758` | `sse-errors` 6 項（含正常串流仍只有一個 `finish_reason` 與 `[DONE]`） |
 | 3 P1 fail-closed 測試 | stub 改成 driver 真實錯誤契約（`reply:''`、`error`、`threadUnavailable:true`），實際發 HTTP，驗 502、錯誤訊息、Map 無新增、下一次仍要求新 thread。另補：串流路徑即使 fail-closed 結果帶著舊 thread URL，也不得綁定 | `test/thread-routing.test.mjs`、`muse-openai-shim.mjs:627-640` | 原本 2 項＋新增 1 項（把守衛拿掉會失敗，已實測） |
 | 3 附帶：`_newChat()` 成功判定 | 只有看過 `/thread/new` 且 composer ready 才回 `ok:true`；送出後再比對 uuid 與送出前不同，否則回 `threadUnavailable` | `muse-driver.mjs:244-263`、`:518-535` | 程式碼核對；失敗路徑由上述測試覆蓋 |
-| 4 P2 Schema 驗證 | 遞迴驗證：`type`（含 union）、`enum`、`required`、`properties`、`additionalProperties`、`items`、`minItems/maxItems`、`minLength/maxLength`、`minimum/maximum`；未知關鍵字放行；`tool_choice` 無 tools → 400 `missing_tools` | `muse-openai-shim.mjs:155-235`、`:344-360` | `tool-calling` +2 項 |
+| 4 P2 Schema 驗證 | 遞迴驗證：`type`（含 union）、`enum`、`required`、`properties`、`additionalProperties`、`items`、`minItems/maxItems`、`minLength/maxLength`、`minimum/maximum`；未知關鍵字放行；`tool_choice` 無 tools → 400 `missing_tools` | `muse-openai-shim.mjs:160-233`、`:525-537` | `tool-calling` +2 項 |
 | 5 P2 依賴 | `zod` 升到 `^4.6.7`（SDK 宣告接受 `^3.25 \|\| ^4.0`）；commit `package-lock.json`、CI 改 `npm ci`；`npm audit` 由 1 high → 0 | `package.json`、`package-lock.json`、`.gitignore`、workflow | `mcp-schema` 1 項＋`npm audit --json` |
-| 6 P2 CI 環境 | matrix：`ubuntu-latest` / `windows-latest` × Node 22 / 24；`actions/checkout@v7`、`actions/setup-node@v7`（取自官方 `releases/latest`：v7.0.1、v7.1.0） | `.github/workflows/tool-calling-tests.yml` | **未執行**：需 push 後由 Actions 跑 |
+| 6 P2 CI 環境 | matrix：`ubuntu-latest` / `windows-latest` × Node 22 / 24；`actions/checkout@v7`、`actions/setup-node@v7`（取自官方 `releases/latest`：v7.0.1、v7.1.0） | `.github/workflows/tool-calling-tests.yml` | run `43483204976`：4/4 success |
 | 7 P2 實機驗收 | 清單見 11.3 | 本檔 | 人工，待做 |
 | 8 P3 文件 | README 更新 session id / affinity、缺 id 行為、SSE 錯誤、schema 子集合、測試數、CI 環境、E2E 狀態 | `README.md` | 人工核對 |
-| 額外：測試不穩定 | 本機動態 TCP 範圍是 1024–14999，`listen(0)` 偶爾拿到 fetch 規格封鎖的埠（如 6566、10080），undici 直接回 `bad port`，造成偶發失敗 | `test-helpers/shim-server.mjs`、`test/shim-port.test.mjs` | 連續 28 次 `npm test` 全過；新增 1 項回歸測試 |
+| 額外：測試不穩定 | 本機動態 TCP 範圍是 1024–14999，`listen(0)` 偶爾拿到 fetch 規格封鎖的埠（如 6566、10080），undici 直接回 `bad port`，造成偶發失敗 | `test-helpers/shim-server.mjs`、`test/shim-port.test.mjs` | 最終版連續 10 次 `npm test` 全過；新增 1 項回歸測試 |
 
 ### 11.2 本機驗證證據
 
@@ -240,6 +240,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 | `npm ci --dry-run` | exit 0（lockfile 完整可重現） |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
 | `git diff --check` | 無空白錯誤 |
+| GitHub Actions（commit `31134f4`，run [43483204976](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43483204976)） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 
 **`npm audit` 紀錄（JSON）**：
 
@@ -247,7 +248,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 - 修正後：`zod@4.6.7`，`vulnerabilities: {}`，exit 0；`@modelcontextprotocol/sdk@1.32.2` 宣告接受 `zod: "^3.25 || ^4.0"`，並以 `test/mcp-schema.test.mjs` 驗證 SDK 仍能註冊工具、列出 JSON Schema 並呼叫。
 - 原始輸出：`E:\Temp\opencode\audit.json`（修正前）、`E:\Temp\opencode\audit-after-zod4.json`（修正後）。
 
-未執行、不可宣稱通過：Node 22、Windows runner 的 CI（要 push 才會跑）。
+未執行、不可宣稱通過：無（CI 四組合已於 `31134f4` 實跑成功）。
 
 ### 11.3 人工驗收清單（審查第 7 項 A–J）
 
@@ -278,7 +279,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 ### 11.4 尚未完成 / 需裁決
 
 1. 上述人工驗收（A–J，尤其 Desktop GUI 三步驟）尚未執行。
-2. 本輪 4 個已修改檔案＋3 個新測試檔＋lockfile＋workflow，尚未 commit / push（需使用者同意）。
+2. 本輪修正已 commit（程式 `8e1d816`；文件提交見 `git log`）並推上 `fork/fix/opencode-tool-calling`。
 3. PR #1 說明尚未更新（需使用者同意張貼）。
 
 
