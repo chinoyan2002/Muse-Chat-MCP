@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildPrompt, parseToolCalls, startShim } from '../muse-openai-shim.mjs'
+import { buildPrompt, parseToolCalls, startShim, validateArguments } from '../muse-openai-shim.mjs'
 import { driver } from '../muse-driver.mjs'
+import { closeServer, startTestShim } from '../test-helpers/shim-server.mjs'
 
 const tools = [{
   type: 'function',
@@ -299,20 +300,92 @@ test('preserves a real newline in a non-path argument', () => {
   assert.equal(JSON.parse(calls[0].function.arguments).command, 'echo a\necho b')
 })
 
+test('validates nested objects, arrays, enums and bounds', () => {
+  const schema = {
+    type: 'object',
+    required: ['config', 'tags'],
+    additionalProperties: false,
+    properties: {
+      config: {
+        type: 'object',
+        required: ['port'],
+        additionalProperties: false,
+        properties: {
+          port: { type: 'integer', minimum: 1, maximum: 65535 },
+          mode: { type: 'string', enum: ['fast', 'safe'] },
+          name: { type: 'string', minLength: 2, maxLength: 8 },
+          ratio: { type: 'number', minimum: 0, maximum: 1 },
+        },
+      },
+      tags: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } },
+      optional: { type: ['string', 'null'] },
+    },
+  }
+  const ok = {
+    config: { port: 8080, mode: 'fast', name: 'abcd', ratio: 0.5 },
+    tags: ['a', 'b'],
+    optional: null,
+  }
+  assert.equal(validateArguments(ok, schema), true)
+
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, port: '8080' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { mode: 'fast' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, port: 0 } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, port: 70000 } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, mode: 'turbo' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, name: 'a' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, name: 'toolongname' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: 'a' }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: [] }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: ['a', 'b', 'c', 'd'] }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: [1] }, schema), false)
+  assert.equal(validateArguments({ ...ok, extra: true }, schema), false)
+  assert.equal(validateArguments({ ...ok, optional: 5 }, schema), false)
+})
+
+test('accepts a schema keyword it does not understand instead of rejecting the call', () => {
+  const schema = {
+    type: 'object',
+    properties: { path: { type: 'string', format: 'uri' } },
+    required: ['path'],
+  }
+  assert.equal(validateArguments({ path: 'C:/x' }, schema), true)
+})
+
+test('tool_choice without any tool definition is a request error', async () => {
+  await withStubbedShim(
+    'unused',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'run it' }],
+          tool_choice: 'required',
+        }),
+      })
+      assert.equal(response.status, 400)
+      const data = await response.json()
+      assert.equal(data.error.code, 'missing_tools')
+    },
+  )
+})
+
 async function withStubbedShim(reply, run) {
   const original = driver.chat
+  const originalMode = process.env.MUSE_THREAD_MODE
+  // These cases are about the OpenAI surface, not thread routing.
+  process.env.MUSE_THREAD_MODE = 'single'
   driver.chat = async (prompt) => ({ reply: typeof reply === 'function' ? reply(prompt) : reply })
-  const server = startShim({ port: 0, host: '127.0.0.1' })
+  const { server, base } = await startTestShim(startShim)
   try {
-    await new Promise((resolve, reject) => {
-      server.once('listening', resolve)
-      server.once('error', reject)
-    })
-    const address = server.address()
-    return await run(`http://127.0.0.1:${address.port}`)
+    return await run(base)
   } finally {
     driver.chat = original
-    await new Promise((resolve) => server.close(resolve))
+    if (originalMode === undefined) delete process.env.MUSE_THREAD_MODE
+    else process.env.MUSE_THREAD_MODE = originalMode
+    await closeServer(server)
   }
 }
 

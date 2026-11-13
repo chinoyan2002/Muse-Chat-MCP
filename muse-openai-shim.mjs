@@ -68,16 +68,23 @@ function threadStore() {
   return cachedStore
 }
 
-// OpenCode sends a stable session id on every request; preferring it over a hash of
-// the prompt keeps one conversation on one thread even when the system prompt changes
-// (compaction, model switch) and stops two sessions with the same opening line from
-// sharing a thread. Falls back to hashing for other clients.
+// OpenCode sets `x-opencode-session-id` to the real session id. `x-opencode-session`,
+// `X-Session-Id` (same header as `x-session-id`) and `x-session-affinity` all carry the
+// *affinity* value (the parent's id for a child session), so they must never be treated
+// as a unique conversation key.
+// Source: packages/core/src/session/model-request.ts:321-332 + session/affinity.ts.
 function hostSessionId(req) {
-  const raw = req.headers['x-opencode-session']
-    || req.headers['x-opencode-session-id']
-    || req.headers['x-session-id']
-  const s = typeof raw === 'string' ? raw.trim() : ''
-  return s || null
+  for (const raw of [req.headers['x-opencode-session-id'], req.headers['x-muse-session-id']]) {
+    const s = typeof raw === 'string' ? raw.trim() : ''
+    if (s) return s
+  }
+  return null
+}
+
+// The prompt-hash key collides when two sessions start with the same text, so it is
+// only available as an explicit compatibility mode.
+function threadKeyMode() {
+  return String(process.env.MUSE_THREAD_KEY || 'session').toLowerCase() === 'hash' ? 'hash' : 'session'
 }
 
 // OpenCode's title generator is a separate request; giving it a fixed key keeps its
@@ -146,22 +153,83 @@ export function buildPrompt(body) {
   return parts.join('\n\n').trim()
 }
 
-function validateArguments(args, schema, name) {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return false
+// Supported JSON Schema subset (OpenAI function calling): type, enum, required,
+// properties, additionalProperties, items, minItems/maxItems, minLength/maxLength,
+// minimum/maximum, and union types such as ["string","null"]. Unknown keywords are
+// accepted because rejecting a schema we do not understand is worse than trusting it.
+export const SUPPORTED_SCHEMA_KEYWORDS = [
+  'type', 'enum', 'required', 'properties', 'additionalProperties', 'items',
+  'minItems', 'maxItems', 'minLength', 'maxLength', 'minimum', 'maximum',
+]
+
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function validateValue(value, schema) {
   if (!schema || typeof schema !== 'object') return true
-  for (const key of schema.required || []) if (!(key in args)) return false
+  if (Array.isArray(schema.type)) {
+    return schema.type.some((t) => validateValue(value, { ...schema, type: t }))
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((option) => sameJson(option, value))) return false
+
+  switch (schema.type) {
+    case 'null':
+      return value === null
+    case 'string':
+      if (typeof value !== 'string') return false
+      if (typeof schema.minLength === 'number' && value.length < schema.minLength) return false
+      if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) return false
+      return true
+    case 'boolean':
+      return typeof value === 'boolean'
+    case 'number':
+      if (typeof value !== 'number' || !Number.isFinite(value)) return false
+      if (typeof schema.minimum === 'number' && value < schema.minimum) return false
+      if (typeof schema.maximum === 'number' && value > schema.maximum) return false
+      return true
+    case 'integer':
+      if (!Number.isInteger(value)) return false
+      if (typeof schema.minimum === 'number' && value < schema.minimum) return false
+      if (typeof schema.maximum === 'number' && value > schema.maximum) return false
+      return true
+    case 'array':
+      if (!Array.isArray(value)) return false
+      if (typeof schema.minItems === 'number' && value.length < schema.minItems) return false
+      if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) return false
+      return schema.items ? value.every((item) => validateValue(item, schema.items)) : true
+    case 'object':
+      return validateObject(value, schema)
+    default:
+      // No type keyword: validate object shape when the schema describes one.
+      if (schema.properties || schema.required || schema.additionalProperties !== undefined) {
+        return validateObject(value, schema)
+      }
+      return true
+  }
+}
+
+function validateObject(value, schema) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  for (const key of schema.required || []) if (!(key in value)) return false
   const props = schema.properties || {}
-  for (const [key, value] of Object.entries(args)) {
-    const expected = props[key]?.type
-    if (!expected) continue
-    if (expected === 'string' && typeof value !== 'string') return false
-    if (expected === 'boolean' && typeof value !== 'boolean') return false
-    if (expected === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return false
-    if (expected === 'integer' && !Number.isInteger(value)) return false
-    if (expected === 'array' && !Array.isArray(value)) return false
-    if (expected === 'object' && (!value || typeof value !== 'object' || Array.isArray(value))) return false
+  for (const [key, item] of Object.entries(value)) {
+    if (props[key]) {
+      if (!validateValue(item, props[key])) return false
+      continue
+    }
+    if (schema.additionalProperties === false) return false
+    if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+      if (!validateValue(item, schema.additionalProperties)) return false
+    }
   }
   return true
+}
+
+export function validateArguments(args, schema, name) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false
+  if (!schema || typeof schema !== 'object') return true
+  return validateValue(args, { ...schema, type: schema.type || 'object' })
 }
 
 /** Re-escape every backslash that is not already `\\` or `\"`, then parse. */
@@ -454,6 +522,18 @@ async function handleChat(req, res, body) {
   if (!Array.isArray(body.messages) || !body.messages.length) {
     return sendError(res, 400, 'Missing required field: messages', 'invalid_request_error', null, 'messages')
   }
+  const needsTool = body.tool_choice === 'required'
+    || (body.tool_choice !== null && typeof body.tool_choice === 'object')
+  if (needsTool && (!Array.isArray(body.tools) || body.tools.length === 0)) {
+    return sendError(
+      res,
+      400,
+      'tool_choice requires at least one tool definition',
+      'invalid_request_error',
+      'missing_tools',
+      'tools',
+    )
+  }
 
   const model = String(body.model)
   const id = rid()
@@ -490,32 +570,48 @@ async function handleChat(req, res, body) {
   let chatTarget = chat
   let releaseCreate = null
   if (!explicitThread && mode === 'session') {
-    const hostSession = hostSessionId(req)
-    threadKey = isTitleRequest(body.messages)
-      ? TITLES_KEY
-      : (hostSession ? `session:${hostSession}` : deriveThreadKey(body.messages))
-    if (threadKey) {
-      const known = wantNewThread ? null : threadStore().get(threadKey)
-      if (known) {
-        chatTarget = known
-      } else if (pendingCreates.has(threadKey)) {
-        // A sibling request is already creating this conversation's Side chat.
-        // Queue behind it instead of creating a second, orphaned thread.
-        await pendingCreates.get(threadKey)
-        const bound = threadStore().get(threadKey)
-        if (bound) chatTarget = bound
-        else wantNewThread = true
-      } else {
-        // Unknown conversation: always open a fresh Side chat. Never fall back to the
-        // currently open chat, otherwise two host conversations would share a context.
-        wantNewThread = true
-        let release
-        const pending = new Promise((resolve) => { release = resolve })
-        pendingCreates.set(threadKey, pending)
-        releaseCreate = () => {
-          if (pendingCreates.get(threadKey) === pending) pendingCreates.delete(threadKey)
-          release()
-        }
+    if (isTitleRequest(body.messages)) {
+      threadKey = TITLES_KEY
+    } else {
+      const hostSession = hostSessionId(req)
+      if (hostSession) {
+        threadKey = `session:${hostSession}`
+      } else if (threadKeyMode() === 'hash') {
+        threadKey = deriveThreadKey(body.messages)
+      }
+      if (!threadKey) {
+        // Silently keying by prompt content lets two conversations collide; refuse instead.
+        sendError(
+          res,
+          400,
+          'session threading needs a unique session id: send x-opencode-session-id (OpenCode) or x-muse-session-id, '
+            + 'or set MUSE_THREAD_MODE=single, or opt into the legacy prompt hash with MUSE_THREAD_KEY=hash',
+          'invalid_request_error',
+          'missing_session_id',
+        )
+        return
+      }
+    }
+    const known = wantNewThread ? null : threadStore().get(threadKey)
+    if (known) {
+      chatTarget = known
+    } else if (pendingCreates.has(threadKey)) {
+      // A sibling request is already creating this conversation's Side chat.
+      // Queue behind it instead of creating a second, orphaned thread.
+      await pendingCreates.get(threadKey)
+      const bound = threadStore().get(threadKey)
+      if (bound) chatTarget = bound
+      else wantNewThread = true
+    } else {
+      // Unknown conversation: always open a fresh Side chat. Never fall back to the
+      // currently open chat, otherwise two host conversations would share a context.
+      wantNewThread = true
+      let release
+      const pending = new Promise((resolve) => { release = resolve })
+      pendingCreates.set(threadKey, pending)
+      releaseCreate = () => {
+        if (pendingCreates.get(threadKey) === pending) pendingCreates.delete(threadKey)
+        release()
       }
     }
   } else if (!explicitThread && mode === 'new') {
@@ -531,6 +627,10 @@ async function handleChat(req, res, body) {
   const bindThread = (result) => {
     try {
       if (!threadKey) return
+      // Fail-closed results can carry the URL of the chat we refused to use (the old
+      // thread, or a route we could not confirm as new). Binding it would put two host
+      // conversations back on one Muse thread, so never persist those.
+      if (result && result.threadUnavailable) return
       const threadId = extractThreadId(result && result.threadUrl)
       if (threadId) {
         threadStore().set(threadKey, threadId)
@@ -549,14 +649,31 @@ async function handleChat(req, res, body) {
 
   log(`chat model=${model} stream=${stream} tools=${wantTools} files=${files.length} mode=${mode} thread=${wantNewThread ? 'new' : chatTarget !== undefined ? chatTarget : 'current'} promptChars=${prompt.length}`)
 
+  let sseStarted = false
   try {
     let finishReason = 'stop'
     if (stream) {
-      sseHeaders(res)
       let closed = false
-      res.on('close', () => { closed = true })
-      const write = (s) => { if (!closed) { try { res.write(s) } catch { closed = true } } }
-      write(chunk(id, model, created, { role: 'assistant', content: '' }))
+      // Headers are only sent once there is something to deliver, so a failure before
+      // that point is still a normal HTTP error instead of an empty 200 stream.
+      const ensureHeaders = () => {
+        if (sseStarted) return
+        sseHeaders(res)
+        sseStarted = true
+        res.on('close', () => { closed = true })
+      }
+      const raw = (s) => {
+        ensureHeaders()
+        if (!closed) { try { res.write(s) } catch { closed = true } }
+      }
+      let roleSent = false
+      const write = (s) => {
+        if (!roleSent) {
+          roleSent = true
+          raw(chunk(id, model, created, { role: 'assistant', content: '' }))
+        }
+        raw(s)
+      }
 
       if (wantTools) {
         // Buffer so we can decide tool_calls vs content before emitting.
@@ -585,7 +702,9 @@ async function handleChat(req, res, body) {
           },
         })
         bindThread(r)
-        if (r.error && !emitted) throw new Error(r.error)
+        // Any driver error must surface: before the first token as HTTP 5xx, after it
+        // as an SSE error event (handled by the catch below).
+        if (r.error) throw new Error(r.error)
       }
 
       write(chunk(id, model, created, {}, finishReason))
@@ -626,7 +745,17 @@ async function handleChat(req, res, body) {
   } catch (err) {
     log('error:', err && err.message)
     if (releaseCreate) releaseCreate()
-    sendError(res, 502, `Muse error: ${err && err.message ? err.message : String(err)}`, 'api_error')
+    const message = `Muse error: ${err && err.message ? err.message : String(err)}`
+    if (sseStarted) {
+      // Headers are gone, so report the failure inside the stream and close it cleanly.
+      try {
+        res.write(`data: ${JSON.stringify({ error: { message, type: 'api_error' } })}\n\n`)
+        res.write('data: [DONE]\n\n')
+      } catch { /* client already disconnected */ }
+      res.end()
+      return
+    }
+    sendError(res, 502, message, 'api_error')
   }
 }
 

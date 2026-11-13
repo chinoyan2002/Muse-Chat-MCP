@@ -1,6 +1,5 @@
 # deps
 node_modules/
-package-lock.json
 
 # the dedicated Chrome profile that holds YOUR login — never commit this
 .muse-profile/
