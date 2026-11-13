@@ -213,7 +213,9 @@ for chunk in r:
 - **Attachments** — send images/video via OpenAI multimodal content (`{"type":"image_url","image_url":{"url":…}}`) or a top-level `files` array (local paths / URLs / data-URIs). Muse sees them like a normal chat attachment.
 - **Plain message** — the shim sends the latest user message **verbatim**: no `### USER/### ASSISTANT` role markers and no "continue the conversation" wrapper. Muse flags roleplay-style wrappers as prompt-injection and refuses them, so the bridge never adds any. Prior context comes from Muse's own thread.
 - **Sessions** — target a chat with header `x-muse-chat: <title|index|url>` (or body `chat`); read chats via `GET /v1/muse/chats` and `GET /v1/muse/chat`.
-- **Headers** — `x-muse-thread: new` (navigate to `/` first), `x-muse-timeout-ms`.
+- **One thread per conversation** — with `MUSE_THREAD_MODE=session` (default) the shim binds each host conversation to its own Muse Side chat, keyed by the conversation's system prompt plus first user message, and reuses it on later turns. Bindings persist in `.muse-threads.json` (git-ignored). `single` restores the old "whatever thread is open" behavior; `new` starts a fresh chat per request.
+- **Isolation guard** — Muse recalls facts across chats, so a separate chat alone does not stop memory bleed. Session-routed prompts also carry a short instruction to answer only from the current conversation.
+- **Headers** — `x-muse-thread: new` (start a fresh chat), `x-muse-timeout-ms`.
 
 ---
 
@@ -339,6 +341,8 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 | `MUSE_SHIM_PORT` | `8787` | shim port (`0` disables the shim) |
 | `MUSE_SHIM_HOST` | `127.0.0.1` | shim bind host |
 | `MUSE_SHIM_TIMEOUT_MS` | `240000` | default shim request timeout |
+| `MUSE_THREAD_MODE` | `session` | `session` = one Muse Side chat per conversation, `single` = one shared thread, `new` = fresh chat per request |
+| `MUSE_THREAD_MAP` | `./.muse-threads.json` | conversation → thread bindings (git-ignored) |
 | `MUSE_SHIM_MODELS` | `muse-spark-1.3,muse-spark-1.3-contributor,muse` | advertised model ids |
 | `MUSE_SHIM_URL` | `http://127.0.0.1:8787/v1` | shim base url used by the CLI |
 | `MUSE_CLI_AUTOSTART=0` | off | disable the CLI auto-starting a shim |
@@ -355,7 +359,8 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 
 ## Limitations
 
-- **One conversation.** Muse is a single persistent thread; the in-app "new chat" control is unreliable. The shim sends the full transcript each call; `x-muse-thread: new` navigates to `/` first (best-effort fresh context).
+- **Muse remembers across chats.** Separate Side chats hide each other's transcript, but Muse can still recall facts from other conversations; the shim therefore adds an isolation guard to every session-routed prompt. Treat it as a strong hint, not a hard boundary.
+- **One conversation per thread.** Multi-thread support relies on Muse's "new side chat" control; `muse_dump_dom` and `MUSE_THREAD_MODE=single` are the escape hatches if the UI changes.
 - **Serialized** — one browser, requests run one at a time (auto-queued).
 - **Tool calling is prompt-injected** — best-effort, not a native function-calling API.
 - **DOM-driven** — a Muse UI change can break selectors; `muse_dump_dom` is the escape hatch.

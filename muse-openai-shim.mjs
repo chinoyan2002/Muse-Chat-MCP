@@ -25,7 +25,10 @@
  * ------------------------------------------------------------------
  */
 import http from 'node:http'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { driver } from './muse-driver.mjs'
+import { createThreadStore, deriveThreadKey, extractThreadId } from './muse-thread-map.mjs'
 
 const PORT = Number(process.env.MUSE_SHIM_PORT || 8787)
 const HOST = process.env.MUSE_SHIM_HOST || '127.0.0.1'
@@ -36,6 +39,33 @@ const MODEL_IDS = (process.env.MUSE_SHIM_MODELS || 'muse-spark-1.3,muse-spark-1.
   .filter(Boolean)
 
 const log = (...a) => console.error('[muse-shim]', ...a)
+
+// --- conversation -> Muse thread routing -----------------------------------
+// session (default): one host conversation gets its own Muse Side chat
+// single: every request uses whatever thread is currently open (old behavior)
+// new:    every request starts a fresh Side chat
+const DEFAULT_THREAD_MAP = path.join(path.dirname(fileURLToPath(import.meta.url)), '.muse-threads.json')
+const threadlessKeys = new Set()
+let cachedStore = null
+
+// Muse keeps memory across chats, so a separate Side chat alone is not enough.
+// Every session-routed request also carries this guard; verified with a two-thread
+// token test (see ACCEPTANCE-RUN.md).
+const ISOLATION_GUARD = [
+  'Independent task: answer only from what this conversation contains. Do not use, assume, or mention content from other chats, other tasks, or earlier memory.',
+  '以下是一個獨立的工作項目：請只依據本對話中明確提供的內容作答，不要引用、假設或提及任何其他對話、其他任務或先前記憶中的內容。',
+].join('\n')
+
+function threadMode() {
+  const mode = String(process.env.MUSE_THREAD_MODE || 'session').toLowerCase()
+  return ['session', 'single', 'new'].includes(mode) ? mode : 'session'
+}
+
+function threadStore() {
+  const file = path.resolve(process.env.MUSE_THREAD_MAP || DEFAULT_THREAD_MAP)
+  if (!cachedStore || cachedStore.file !== file) cachedStore = createThreadStore(file)
+  return cachedStore
+}
 const rid = () => `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 const now = () => Math.floor(Date.now() / 1000)
 const approxTokens = (s) => Math.max(1, Math.ceil((s || '').length / 4))
@@ -292,10 +322,12 @@ function sendError(res, status, message, type = 'invalid_request_error', code = 
  */
 async function requestToolCalls(prompt, opts, body) {
   const first = await driver.chat(prompt, opts)
-  if (first.error && !first.reply) return { reply: first.reply, calls: null, error: first.error }
+  if (first.error && !first.reply) return { reply: first.reply, calls: null, error: first.error, threadUrl: first.threadUrl }
 
   const parsed = parseToolCallsDetailed(first.reply, body.tools, body.tool_choice)
-  if (parsed.calls || !parsed.attempted) return { reply: first.reply, calls: parsed.calls, error: null }
+  if (parsed.calls || !parsed.attempted) {
+    return { reply: first.reply, calls: parsed.calls, error: null, threadUrl: first.threadUrl }
+  }
 
   log('retrying rejected tool call:', parsed.error)
   const correction = [
@@ -306,12 +338,13 @@ async function requestToolCalls(prompt, opts, body) {
     'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
   ].join('\n')
   const second = await driver.chat(correction, { ...opts, newThread: false })
-  if (second.error && !second.reply) return { reply: first.reply, calls: null, error: null }
+  if (second.error && !second.reply) return { reply: first.reply, calls: null, error: null, threadUrl: second.threadUrl || first.threadUrl }
   const retried = parseToolCallsDetailed(second.reply, body.tools, body.tool_choice)
   return {
     reply: retried.calls ? second.reply : second.reply || first.reply,
     calls: retried.calls,
     error: null,
+    threadUrl: second.threadUrl || first.threadUrl,
   }
 }
 
@@ -326,10 +359,10 @@ async function handleChat(req, res, body) {
   const id = rid()
   const created = now()
   const timeoutMs = Number(req.headers['x-muse-timeout-ms']) || DEFAULT_TIMEOUT_MS
-  // Default: continue the current Muse thread and rely on the full transcript we send.
-  // Send header `x-muse-thread: new` to start a fresh thread instead.
+  // Conversation -> thread routing. `x-muse-thread: new` forces a fresh Side chat,
+  // `x-muse-chat` names one explicitly, and MUSE_THREAD_MODE picks the default.
   const newThread = req.headers['x-muse-thread'] === 'new'
-  const prompt = buildPrompt(body)
+  let prompt = buildPrompt(body)
   const wantTools = Array.isArray(body.tools) && body.tools.length > 0 && body.tool_choice !== 'none'
   const stream = body.stream === true
   const files = collectFiles(body)
@@ -340,7 +373,43 @@ async function handleChat(req, res, body) {
     else if (/^\d+$/.test(s)) chat = Number(s)
   }
 
-  log(`chat model=${model} stream=${stream} tools=${wantTools} files=${files.length} target=${chat !== undefined ? chat : 'current'} promptChars=${prompt.length}`)
+  const mode = threadMode()
+  const explicitThread = chat !== undefined
+  let threadKey = null
+  let wantNewThread = newThread
+  let chatTarget = chat
+  if (!explicitThread && mode === 'session') {
+    threadKey = deriveThreadKey(body.messages)
+    if (threadKey) {
+      const known = wantNewThread ? null : threadStore().get(threadKey)
+      if (known) chatTarget = known
+      else if (!threadlessKeys.has(threadKey)) wantNewThread = true
+    }
+  } else if (!explicitThread && mode === 'new') {
+    wantNewThread = true
+  }
+  const chatOpts = { timeoutMs, newThread: wantNewThread, files, chat: chatTarget }
+  // A separate Side chat hides the transcript, but Muse still recalls earlier chats;
+  // the guard keeps session-routed requests from using that recall.
+  if (threadKey && mode === 'session') prompt = `${ISOLATION_GUARD}\n\n${prompt}`
+
+  // Remember the thread once the driver knows its URL. A fresh Side chat only gets
+  // its /thread/<uuid> after the first message, so this runs after the reply.
+  const bindThread = (result) => {
+    if (!threadKey) return
+    const threadId = extractThreadId(result && result.threadUrl)
+    if (threadId) {
+      threadStore().set(threadKey, threadId)
+      if (wantNewThread) log(`bound conversation ${threadKey} to thread ${threadId}`)
+      return
+    }
+    if (wantNewThread) {
+      threadlessKeys.add(threadKey)
+      log(`no thread id for ${threadKey}; staying on the current thread`)
+    }
+  }
+
+  log(`chat model=${model} stream=${stream} tools=${wantTools} files=${files.length} mode=${mode} thread=${wantNewThread ? 'new' : chatTarget !== undefined ? chatTarget : 'current'} promptChars=${prompt.length}`)
 
   try {
     let finishReason = 'stop'
@@ -353,8 +422,9 @@ async function handleChat(req, res, body) {
 
       if (wantTools) {
         // Buffer so we can decide tool_calls vs content before emitting.
-        const r = await requestToolCalls(prompt, { timeoutMs, newThread, files, chat }, body)
+        const r = await requestToolCalls(prompt, chatOpts, body)
         if (r.error && !r.reply) throw new Error(r.error)
+        bindThread(r)
         if (r.calls && r.calls.length) {
           const deltas = r.calls.map((c, i) => ({
             index: i, id: c.id, type: 'function',
@@ -369,13 +439,14 @@ async function handleChat(req, res, body) {
       } else {
         let emitted = ''
         const r = await driver.chatStream(prompt, {
-          timeoutMs, newThread, files, chat,
+          ...chatOpts,
           onDelta: (full) => {
             const next = full.startsWith(emitted) ? full.slice(emitted.length) : full
             emitted = full
             if (next) write(chunk(id, model, created, { content: next }))
           },
         })
+        bindThread(r)
         if (r.error && !emitted) throw new Error(r.error)
       }
 
@@ -393,9 +464,10 @@ async function handleChat(req, res, body) {
 
     // Non-streaming
     const r = wantTools
-      ? await requestToolCalls(prompt, { timeoutMs, newThread, files, chat }, body)
-      : { reply: (await driver.chat(prompt, { timeoutMs, newThread, files, chat })).reply, calls: null }
+      ? await requestToolCalls(prompt, chatOpts, body)
+      : await driver.chat(prompt, chatOpts)
     if (r.error && !r.reply) throw new Error(r.error)
+    bindThread(r)
     const calls = r.calls
 
     const message = calls && calls.length
@@ -411,6 +483,7 @@ async function handleChat(req, res, body) {
         completion_tokens: approxTokens(r.reply),
         total_tokens: approxTokens(prompt) + approxTokens(r.reply),
       },
+      ...(r.threadUrl ? { threadUrl: r.threadUrl } : {}),
     }))
   } catch (err) {
     log('error:', err && err.message)

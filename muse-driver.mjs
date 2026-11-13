@@ -226,19 +226,64 @@ class MuseDriver {
   async _newChat() {
     const p = await this.requirePage()
     await this.gotoApp()
-    // Prefer the app's own "New side chat" control (reliable); fall back to the home composer.
-    try {
-      const btn = p.getByRole('button', { name: /new side chat/i })
-      if (await btn.count()) {
-        await btn.first().click({ timeout: 5000 })
-        await sleep(1200)
-        await this.waitForComposer()
-        return { ok: true, url: p.url() }
+    try { await this.waitForComposer(20000) } catch { /* click anyway */ }
+    // The compose control carries a stable test id; its accessible name is localized
+    // ("New side chat" / "新副聊天室"), so never match on the English label alone.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await this._clickNewSideChat()) {
+        // Confirm the app actually entered a new-thread route before typing into it.
+        const url = await this._waitForThreadRoute(6000)
+        if (/\/thread\/(new|[0-9a-f-]{36})/i.test(url)) {
+          // The composer appears before the new thread is ready; an immediate send
+          // can produce an empty reply, so give the route a moment to settle.
+          await this.waitForComposer()
+          await sleep(1200)
+          return { ok: true, url: p.url() }
+        }
       }
-    } catch { /* fall through */ }
+      await sleep(800)
+    }
     await p.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: LAUNCH_TIMEOUT })
     await this.waitForComposer()
-    return { ok: true, url: p.url() }
+    return { ok: false, url: p.url(), warning: 'side-chat control did not open a new thread; used the main composer' }
+  }
+
+  async _clickNewSideChat() {
+    const p = await this.requirePage()
+    for (const locator of [
+      p.locator('[data-testid="hatch-chat-compose"]'),
+      p.getByRole('button', { name: /new side chat|新副聊天室|新しいサイドチャット/i }),
+    ]) {
+      try {
+        if (await locator.count()) {
+          await locator.first().click({ timeout: 5000 })
+          return true
+        }
+      } catch { /* try the next locator */ }
+    }
+    return false
+  }
+
+  /** Wait until the app is on /thread/new or /thread/<uuid>; returns the URL either way. */
+  async _waitForThreadRoute(timeoutMs = 8000) {
+    const p = await this.requirePage()
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (/\/thread\/(new|[0-9a-f-]{36})(?:$|[?#])/i.test(p.url())) break
+      await sleep(250)
+    }
+    return p.url()
+  }
+
+  /** A fresh side chat only gets its uuid after the first message is sent. */
+  async _waitForThreadId(timeoutMs = 12000) {
+    const p = await this.requirePage()
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (/\/thread\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(p.url())) break
+      await sleep(300)
+    }
+    return p.url()
   }
 
   async newChat() {
@@ -434,10 +479,17 @@ class MuseDriver {
       try { onDelta(reply) } catch { /* ignore */ }
     }
 
+    // A new side chat is routed to /thread/new until the first message lands; the
+    // uuid appears shortly after. Wait for it so callers can persist the binding.
+    let threadUrl = p.url()
+    if (newThread || /\/thread\/new(?:$|[?#])/i.test(threadUrl)) {
+      threadUrl = await this._waitForThreadId()
+    }
+
     return {
       reply,
       messages: items,
-      threadUrl: p.url(),
+      threadUrl,
       elapsedMs: Date.now() - t0,
       ...(this.lastError ? { error: this.lastError } : {}),
       ...(timedOut ? { timedOut: true } : {}),
