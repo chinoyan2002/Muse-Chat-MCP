@@ -77,6 +77,8 @@ export function buildPrompt(body) {
       '{"tool_calls":[{"name":"EXACT_TOOL_NAME_FROM_SCHEMA","arguments":{}}]}',
       'Copy the tool name character-for-character from the supplied schema. Never add a namespace or prefix such as muse. or opencode.',
       'Never invent, rename, combine, or call a tool that is not listed. Arguments must be a JSON object matching its parameters schema.',
+      'Use the exact property names from that schema (for example filePath, not path) and the exact JSON types it declares.',
+      'Inside JSON strings, escape every Windows backslash as \\\\ or use forward slashes (C:/Users/...).',
       'Do not execute tools, browse, or claim their results. The host application executes tool calls.',
       'If no tool is needed, answer normally.',
       'Available tool schemas:', JSON.stringify(schemas),
@@ -112,16 +114,67 @@ function validateArguments(args, schema, name) {
   return true
 }
 
-export function parseToolCalls(text, tools = [], toolChoice = 'auto') {
-  if (!text) return null
+function parseJsonLenient(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    // Muse sometimes emits Windows paths with single backslashes ("C:\Users\..."), which
+    // is invalid JSON. Re-escape every backslash inside a string that is not already
+    // `\\` or `\"`, then retry once.
+    let out = ''
+    let inString = false
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i]
+      if (ch === '"') {
+        inString = !inString
+        out += ch
+        continue
+      }
+      if (inString && ch === '\\') {
+        const next = text[i + 1]
+        if (next === '"' || next === '\\') {
+          out += ch + next
+          i++
+          continue
+        }
+        out += '\\\\'
+        continue
+      }
+      out += ch
+    }
+    try {
+      return JSON.parse(out)
+    } catch {
+      return null
+    }
+  }
+}
+
+const looksLikeToolCallAttempt = (text) => /"?(?:tool_calls|toolCalls)"?\s*:/i.test(String(text || ''))
+
+function requiredKeys(schema) {
+  return Array.isArray(schema?.required) ? schema.required : []
+}
+
+export function parseToolCallsDetailed(text, tools = [], toolChoice = 'auto') {
+  const unattempted = { calls: null, error: null, attempted: false }
+  if (!text) return unattempted
   const trimmed = text.trim()
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
   const candidate = (fenced ? fenced[1] : trimmed).trim()
-  if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null
-  let obj
-  try { obj = JSON.parse(candidate) } catch { return null }
-  const rawCalls = obj && (obj.tool_calls || obj.toolCalls)
-  if (!Array.isArray(rawCalls) || !rawCalls.length) return null
+  if (!candidate.startsWith('{') || !candidate.endsWith('}')) return unattempted
+
+  const obj = parseJsonLenient(candidate)
+  if (!obj) {
+    return {
+      calls: null,
+      attempted: true,
+      error: 'the reply was not valid JSON (escape Windows backslashes or use forward slashes)',
+    }
+  }
+  const rawCalls = obj.tool_calls || obj.toolCalls
+  if (!Array.isArray(rawCalls) || !rawCalls.length) return unattempted
+
   const allowed = new Map((tools || []).map((t) => {
     const f = t.function || t
     return [f.name, f]
@@ -129,22 +182,37 @@ export function parseToolCalls(text, tools = [], toolChoice = 'auto') {
   const forcedName = toolChoice && typeof toolChoice === 'object'
     ? (toolChoice.function?.name || toolChoice.name)
     : null
+
   const calls = []
   for (const [i, c] of rawCalls.entries()) {
     const name = c?.name || c?.function?.name
     if (typeof name !== 'string' || !allowed.has(name)) {
       log('rejected unknown tool name:', String(name))
-      return null
+      return {
+        calls: null,
+        attempted: true,
+        error: `unknown tool name "${name}"; use one of: ${[...allowed.keys()].join(', ')}`,
+      }
     }
-    if (forcedName && name !== forcedName) return null
+    if (forcedName && name !== forcedName) {
+      return { calls: null, attempted: true, error: `the request requires the tool "${forcedName}"` }
+    }
     const rawArgs = c.arguments ?? c.function?.arguments ?? {}
     let args = rawArgs
     if (typeof rawArgs === 'string') {
-      try { args = JSON.parse(rawArgs) } catch { return null }
+      args = parseJsonLenient(rawArgs)
+      if (!args) {
+        return { calls: null, attempted: true, error: `arguments for "${name}" are not valid JSON` }
+      }
     }
-    if (!validateArguments(args, allowed.get(name).parameters, name)) {
+    const parameters = allowed.get(name).parameters
+    if (!validateArguments(args, parameters, name)) {
       log('rejected invalid arguments for tool:', name)
-      return null
+      return {
+        calls: null,
+        attempted: true,
+        error: `invalid arguments for "${name}"; required properties: ${requiredKeys(parameters).join(', ') || '(none)'}`,
+      }
     }
     calls.push({
       id: `call_${Date.now().toString(36)}${i}`,
@@ -152,8 +220,14 @@ export function parseToolCalls(text, tools = [], toolChoice = 'auto') {
       function: { name, arguments: JSON.stringify(args) },
     })
   }
-  if (toolChoice === 'required' && !calls.length) return null
-  return calls
+  if (toolChoice === 'required' && !calls.length) {
+    return { calls: null, attempted: true, error: 'a tool call is required but none was returned' }
+  }
+  return { calls, error: null, attempted: true }
+}
+
+export function parseToolCalls(text, tools = [], toolChoice = 'auto') {
+  return parseToolCallsDetailed(text, tools, toolChoice).calls
 }
 
 // Collect attachments from an OpenAI-style request:
@@ -211,6 +285,36 @@ function sendError(res, status, message, type = 'invalid_request_error', code = 
 
 // ---------------------------------------------------------------- handler
 
+/**
+ * Ask Muse for a tool call and, when the reply *looks* like a tool call but is
+ * rejected (wrong property name, invalid JSON, unknown tool), retry once with a
+ * corrective prompt. Bounded to one retry so a confused model cannot loop.
+ */
+async function requestToolCalls(prompt, opts, body) {
+  const first = await driver.chat(prompt, opts)
+  if (first.error && !first.reply) return { reply: first.reply, calls: null, error: first.error }
+
+  const parsed = parseToolCallsDetailed(first.reply, body.tools, body.tool_choice)
+  if (parsed.calls || !parsed.attempted) return { reply: first.reply, calls: parsed.calls, error: null }
+
+  log('retrying rejected tool call:', parsed.error)
+  const correction = [
+    `Your previous reply was rejected by the tool bridge: ${parsed.error}.`,
+    'Reply again with ONLY the corrected tool_calls JSON.',
+    'Use the exact property names and JSON types from the schema.',
+    'In JSON strings escape every Windows backslash as \\\\ or use forward slashes.',
+    'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
+  ].join('\n')
+  const second = await driver.chat(correction, { ...opts, newThread: false })
+  if (second.error && !second.reply) return { reply: first.reply, calls: null, error: null }
+  const retried = parseToolCallsDetailed(second.reply, body.tools, body.tool_choice)
+  return {
+    reply: retried.calls ? second.reply : second.reply || first.reply,
+    calls: retried.calls,
+    error: null,
+  }
+}
+
 async function handleChat(req, res, body) {
   if (!body || typeof body !== 'object') return sendError(res, 400, 'Invalid request body')
   if (!body.model) return sendError(res, 400, 'Missing required field: model', 'invalid_request_error', null, 'model')
@@ -249,11 +353,10 @@ async function handleChat(req, res, body) {
 
       if (wantTools) {
         // Buffer so we can decide tool_calls vs content before emitting.
-        const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
-        if (r.error) throw new Error(r.error)
-        const calls = parseToolCalls(r.reply, body.tools, body.tool_choice)
-        if (calls && calls.length) {
-          const deltas = calls.map((c, i) => ({
+        const r = await requestToolCalls(prompt, { timeoutMs, newThread, files, chat }, body)
+        if (r.error && !r.reply) throw new Error(r.error)
+        if (r.calls && r.calls.length) {
+          const deltas = r.calls.map((c, i) => ({
             index: i, id: c.id, type: 'function',
             function: { name: c.function.name, arguments: c.function.arguments },
           }))
@@ -289,9 +392,11 @@ async function handleChat(req, res, body) {
     }
 
     // Non-streaming
-    const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
+    const r = wantTools
+      ? await requestToolCalls(prompt, { timeoutMs, newThread, files, chat }, body)
+      : { reply: (await driver.chat(prompt, { timeoutMs, newThread, files, chat })).reply, calls: null }
     if (r.error && !r.reply) throw new Error(r.error)
-    const calls = wantTools ? parseToolCalls(r.reply, body.tools, body.tool_choice) : null
+    const calls = r.calls
 
     const message = calls && calls.length
       ? { role: 'assistant', content: null, tool_calls: calls }

@@ -57,9 +57,58 @@ test('includes the executed tool name and result in the next Muse prompt', () =>
   assert.match(prompt, /C:\\Users\\User\\Muse-Chat-MCP/)
 })
 
+test('accepts unescaped Windows backslashes in tool arguments', () => {
+  const calls = parseToolCalls(
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"echo C:\\Users\\User\\Muse-Chat-MCP"}}]}',
+    tools,
+  )
+  assert.equal(calls.length, 1)
+  assert.deepEqual(JSON.parse(calls[0].function.arguments), { command: 'echo C:\\Users\\User\\Muse-Chat-MCP' })
+})
+
+test('retries once with a corrective prompt when a required property is missing', async () => {
+  const readTool = {
+    type: 'function',
+    function: {
+      name: 'read',
+      description: 'Read a file from disk',
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
+    },
+  }
+  const replies = [
+    '{"tool_calls":[{"name":"read","arguments":{"path":"C:/package.json"}}]}',
+    '{"tool_calls":[{"name":"read","arguments":{"filePath":"C:/package.json"}}]}',
+  ]
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return replies[Math.min(prompts.length, replies.length) - 1] },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'Read package.json' }],
+          tools: [readTool],
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'read')
+      assert.deepEqual(JSON.parse(data.choices[0].message.tool_calls[0].function.arguments), { filePath: 'C:/package.json' })
+    },
+  )
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1], /rejected/)
+})
+
 async function withStubbedShim(reply, run) {
   const original = driver.chat
-  driver.chat = async () => ({ reply })
+  driver.chat = async (prompt) => ({ reply: typeof reply === 'function' ? reply(prompt) : reply })
   const server = startShim({ port: 0, host: '127.0.0.1' })
   try {
     await new Promise((resolve, reject) => {
