@@ -8,9 +8,10 @@
 | 項目 | 值 |
 |---|---|
 | Branch | `fix/opencode-tool-calling` |
-| 第三輪基準 | `34cd995`（GitHub 與本機一致；本輪提交見 `git log`） |
-| 追蹤分支 | `fork/fix/opencode-tool-calling`（本輪 push 後才同步） |
-| 未提交 | 本輪修改：`muse-openai-shim.mjs`、`test/retry-failure.test.mjs`（新）、`test/thread-routing.test.mjs`、`test/tool-prose-claims.test.mjs`、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md` |
+| 第三輪基準 | `34cd995`（本輪以前） |
+| 本輪提交 | `c159a57`（修正＋測試）、`570bb61`（文件） |
+| 追蹤分支 | `fork/fix/opencode-tool-calling`（遠端 HEAD `570bb61`，已同步） |
+| 未提交 | 無（僅刻意不追蹤的 `acceptance-*.mjs`、`muse-login.mjs`） |
 
 ## 最後一個 VERIFIED 任務
 
@@ -61,13 +62,14 @@
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
+| GitHub Actions（commit `570bb61`，run 43594290747） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | GitHub Actions（commit `34cd995`，run 43590192594） | success（4/4 matrix jobs） |
 | GitHub Actions（commit `3fdb492`，run 43590078913） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | 路徑解析實測 | naive JSON.parse 得到 char codes 67,58,9,101…（TAB、LF）；shim 得 `C:\temp\new` |
 | CLI 兩輪（新 session，上一輪） | `OK` → `FRESH-900`，同一 thread |
 | `acceptance-threads.mjs`（上一輪） | 4 項全 true（`E:\Temp\opencode\accept-threads-review.log`） |
 
-本輪修改尚未 push，CI 需 push 後才會跑。
+本輪已於 2026-11-14T12:20Z push（`34cd995..570bb61`），CI 四組合全過。
 
 ## 執行中服務
 
@@ -132,10 +134,10 @@
 - T28（P2）：`pendingCreates` 改為「等待者失敗後重新取得鎖」的迴圈；三個併發請求在首次建立失敗後只重建一次（attempts 3 → 2），全部落在同一 thread。
 - T29（P3）：`/home`、`/Users` 只在回覆同時宣稱目錄列表時才視為假結果；一般路徑說明與程式碼片段不再誤判。虛構檔名（無目錄聲明）無法可靠判斷，已寫入 README 限制。
 - 文件：README 移除 `x-session-id` 宣稱、測試數 71；WORK_PLAN／WORK_STATE 的 T6 改為 IN_PROGRESS 並拆成 T6a–T6g；CI 更新為 run 43590192594。
-- 本輪未 push；PR 說明待更新（需使用者貼上或授權）。
+- 2026-11-14T12:20Z：`c159a57`（修正＋測試）、`570bb61`（文件）已 push 到 `fork/fix/opencode-tool-calling`；CI [run 43594290747](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594290747) 四組合全過。
+- 同日 12:18Z 以 WMI 重新啟動 shim（node PID `33524`），本輪修正已生效。
 
 ## 下一個動作
 
-1. 使用者裁決是否 commit / push 本輪（T27–T30）修正。
-2. 更新 PR #1 說明（測試數 71、4/4 matrix、Desktop 已驗與未驗項目）。
-3. 剩餘實機驗收 T31（T6b、T6d、T6e、T6f 平行、T6g）需使用者同意後進行。
+1. 更新 PR #1 說明（測試數 71、4/4 matrix、Desktop 已驗與未驗項目），並由使用者裁決是否 Draft → Ready。
+2. 剩餘實機驗收 T31（T6b、T6d、T6e、T6f 平行、T6g）需使用者同意後進行。

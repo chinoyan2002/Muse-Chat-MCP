@@ -355,6 +355,7 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 
 - `npm test`：71 tests / 71 pass / 0 fail（Node v24.19.0、Windows 11）。
 - TDD：T27 的 7 項在修正前全數失敗；T28 修正前 `attempts=3`；T29 的邊界案例在放寬前會誤判。
+- CI：commit `570bb61` 的 [run 43594290747](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594290747) 四組合（node 22/24 × ubuntu/windows）全過。
 - `git diff --check`：乾淨。
 
 ### 13.3 剩餘實機驗收（尚未完成，不得標記 VERIFIED）
