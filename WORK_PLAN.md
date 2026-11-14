@@ -22,13 +22,13 @@
 | T3 | 併發首請求只建立一個 Side chat | VERIFIED | `test/thread-routing.test.mjs` 併發測試 |
 | T4 | Muse 以散文拒答「無法讀取」時重試一次並要求工具呼叫 | VERIFIED | 單元測試 3 項＋實機重現後通過 |
 | T5 | shim 崩潰可觀測性（時間戳、uncaught 記錄） | VERIFIED | 日誌含 ISO 時間戳；`npm test` |
-| T6 | Desktop GUI 人工驗收（PR 審查 A–J） | IN_PROGRESS | T6a–T6g；僅部分項目完成，見下方 |
+| T6 | Desktop GUI 人工驗收（PR 審查 A–J） | IN_PROGRESS | T6a/T6b/T6c/T6f 完成；T6d/T6e/T6g 待做 |
 | T6a | Desktop 新 session 三步驟（隔離＋工具） | VERIFIED | 2026-11-14 19:22，ACCEPTANCE §12.4 |
-| T6b | A/B 使用完全相同第一句仍開兩個 thread | PENDING | 尚未實機 |
-| T6c | 同 session 後續訊息回原 thread | VERIFIED | A 第三次請求同 thread，回 FIX-820 |
-| T6d | Child Session / Subagent 不共用 parent thread | PENDING | 尚未實機（自動測試 C 已覆蓋） |
+| T6b | A/B 使用完全相同第一句仍開兩個 thread | VERIFIED | 2026-11-14 21:48 shim API 實測（真實 Muse），見 ACCEPTANCE §15 |
+| T6c | 同 session 後續訊息回原 thread | VERIFIED | A 第三次請求同 thread，回 FIX-820；§15 再次實測 |
+| T6d | Child Session / Subagent 不共用 parent thread | PENDING | 不同 session id 會拿到自己的 thread（§15），但未經真實子代理 |
 | T6e | Side chat 建立失敗時 Desktop 顯示錯誤 | PENDING | 尚未實機（自動測試已覆蓋 502） |
-| T6f | 平行 tool call／tool result continuation | IN_PROGRESS | continuation 於 19:22 實測通過；平行呼叫尚未在新版重測 |
+| T6f | 平行 tool call／tool result continuation | VERIFIED | continuation 於 19:22 Desktop 實測；同一回覆兩個 tool call 於 §15 實測 |
 | T6g | 拒答／假結果重試失敗不當成功 | PENDING | 自動測試 VERIFIED；實機尚未 |
 | T7 | `zod` 4.x 升級 | VERIFIED | `zod@4.6.7`；`npm audit` 0；`mcp-schema` 測試通過；MCP 實機未重跑 |
 | T8 | Side chat 建立失敗改為 fail closed | VERIFIED | 建立失敗不送出；不退回目前對話 |
@@ -55,7 +55,7 @@
 | T28 | 第三輪 P2：Thread 建立失敗後的併發恢復 | VERIFIED | 3 個併發請求，失敗後僅一次重建，全部落同一 thread |
 | T29 | 第三輪 P3：假結果偵測邊界 | VERIFIED | 一般路徑說明不誤判；宣稱目錄列表仍攔截；限制已寫入 README |
 | T30 | 第三輪 P4：文件與 PR 說明同步 | VERIFIED | 文件已 push；PR 本文改為 73 tests、run 43597353526，並改為 ready for review |
-| T31 | 剩餘實機驗收（T6b、T6d、T6e、T6f 平行、T6g） | PENDING | 需使用者同意後進行 |
+| T31 | 剩餘實機驗收（T6d、T6e、T6g） | PENDING | 需使用者同意後進行；T6b、T6f 已於 §15 完成 |
 | T32 | 第三輪追加：新對話被導回別的 session 的 thread | VERIFIED | `thread-routing` 新案例：子 session 取得父 thread → 502、map 不新增；`thread-map` 新增 `keysFor` |
 | T33 | 第四輪 P1：第二次重試帶 error 一律失敗 | VERIFIED | 7 項測試（G–K＋鎖釋放＋map 不綁定）；partial reply／tool call 都不回傳 |
 | T34 | 第四輪 P2：第二次仍無效的 tool call 不得當文字 | VERIFIED | `retry-failure` L–O；malformed JSON／未知名稱／參數不符皆 502，auto 散文仍可接受 |

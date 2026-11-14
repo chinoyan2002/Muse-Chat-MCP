@@ -404,3 +404,22 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 
 - 實機驗收 A–F 不變，仍為 PENDING，不得標記 VERIFIED。
 - CI：[run 43599849264](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43599849264)（`7f8e3be`）四組合全過。
+
+## 15. 第四輪實機複驗（2026-11-14 21:47–21:49，shim API ＋ 真實 Muse）
+
+方式：直接以 `POST /v1/chat/completions` 呼叫 shim，帶不同的 `x-opencode-session-id`，使用真實 Muse（非 mock）。這一輪沒有經 Desktop GUI，因此驗的是 shim 的實際行為，不是 OpenCode 的轉發。
+
+| 項目 | 做法 | 結果 |
+|---|---|---|
+| A 相同第一句仍開兩個 thread | `ses_live_r4_a`、`ses_live_r4_b` 送出完全相同的句子 | 兩個 thread：`8203f60c…`、`7f8220c3…`（各 26.6 s／26.1 s） |
+| B 同 session 續回原 thread | `ses_live_r4_a` 再送一則 | 同一 thread `8203f60c…`，回 `LIVE-B-OK` |
+| C 新 session 取得自己的 thread | `ses_live_r4_child` 首送 | 新 thread `1b1cd612…`；map 無共用 |
+| E 同一回覆多個 tool call | 提供 `read`、`glob` schema，要求兩個呼叫 | `finish_reason=tool_calls`，2 個呼叫（read／glob） |
+
+證據：shim 日誌 `13:47:58Z`、`13:48:24Z`、`13:48:53Z`、`13:49:15Z`；`.muse-threads.json` 30 筆，沒有任何 thread 被兩個 key 共用。
+
+仍為 PENDING：
+
+- D：Desktop 在 Side chat 建立失敗時的錯誤顯示。
+- F：拒答或假結果在重試失敗時的實機行為。
+- 真實子代理（C 以不同 session id 模擬，未經 OpenCode 的子代理機制）。

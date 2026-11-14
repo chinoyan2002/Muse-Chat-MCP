@@ -46,7 +46,7 @@
 | T3 | VERIFIED | 併發首請求只建一個 thread |
 | T4 | VERIFIED | 散文拒答重試（`044db70`） |
 | T5 | VERIFIED | 日誌時間戳／例外記錄 |
-| T6 | IN_PROGRESS | Desktop 三步驟已通過（T6a/T6c）；T6b/T6d/T6e/T6g 尚未實機，T6f 平行呼叫待重測 |
+| T6 | IN_PROGRESS | Desktop／實機：T6a、T6b、T6c、T6f 完成；T6d、T6e、T6g 仍待做 |
 | T7 | VERIFIED | `zod@4.6.7`、audit 0、`mcp-schema` 測試通過 |
 | T8 | VERIFIED | Side chat 建立失敗改 fail closed |
 | T9 | VERIFIED | 以唯一 session id（`x-opencode-session-id`）識別 |
@@ -95,7 +95,10 @@
 
 - shim 由 `E:\Temp\opencode\start-muse-shim.cmd` 啟動（WMI 建立，非 shell 子行程）。
 - 日誌：`E:\Temp\opencode\muse-shim.err.log`。
-- 目前行程：node PID `33092`（cmd 啟動器 PID `34288`），2026-11-14 21:02:37（本機）開始監聽 `127.0.0.1:8787`。這是清 map 後重啟的行程，載入 T32 修正。
+- 目前行程：node PID `2136`（cmd 啟動器 PID `17804`），2026-11-14 21:47:13（本機）開始監聽 `127.0.0.1:8787`。這是載入第四輪修正後重啟的行程。
+- 前一個行程 PID `33092`（21:02 啟動）於 21:47 由使用者授權後停止；當時 `/health` 顯示瀏覽器已關閉。
+- 重啟後 `/health` → `ok:true`、`browserRunning:false`、`loggedIn:false`；`/v1/models` 回三個 id。
+- 21:47–21:49 已做第四輪實機複驗（見 ACCEPTANCE §15），瀏覽器因此啟動並保持登入。
 - 前一個行程 PID `33524` 於 21:01 由使用者授權後手動停止；停止前 `/health` 為 `browserRunning:true`、`loggedIn:true`，頁面停在 `ad0cb826…`。
 - 重啟後 `/health` → `ok:true`、`browserRunning:false`、`loggedIn:false`；`/v1/models` 回三個 id。第一則請求才會重新啟動瀏覽器（`.muse-profile` 會保留登入）。
 - 另一個更早的行程（PID 34592）在下一次操作前已不存在；日誌無崩潰記錄，原因未確認。
@@ -161,6 +164,7 @@
 - 21:00 追加 T32：實機發現子代理拿到父對話的 thread。修正在綁定前檢查 thread 是否已屬於別的 key，是就 502；driver 先把「點擊前的 thread」等穩定。新增 2 個測試（修正前皆失敗）。21:01 依使用者授權重啟（PID `23364`），新碼已生效。21:02 刪除 `ses_e25efd2c…` 與 legacy 雜湊鍵的綁定（備份 `.muse-threads.json.bak-20261114-210224`），再次重啟（PID `33092`）；map 現 26 筆、無共用 thread。
 - 21:05 PR #1 本文更新為 73 tests、run 43597353526，並以 GraphQL `markPullRequestReadyForReview` 改為 ready（非 draft）。
 - 21:25 第四輪 push（`7d16d93`、`7f8e3be`）；CI run 43599849264 四組合全過；PR 本文改為 83 tests。
+- 21:47 重啟 shim（PID `2136`）載入第四輪修正；21:47–21:49 以 shim API ＋ 真實 Muse 完成 A/B/C/E（§15）。map 30 筆、無共用 thread。
 - 21:20 第四輪追加 T33／T34：第二次重試只要帶 `error` 就失敗（不再看 reply 是否為空），第二次仍是無效 tool call 時回 502 而不是當文字。`retry-failure` 新增 9 項，修正前 8 項失敗。
 
 ## 下一個動作
