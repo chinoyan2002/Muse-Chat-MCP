@@ -276,6 +276,31 @@ test('three concurrent requests recover to one thread after the first creation f
   })
 })
 
+test('a new thread that already belongs to another conversation is refused', async () => {
+  await withShim(async ({ base, dir }) => {
+    const parent = await send(base, 'parent task', { 'x-opencode-session-id': 'ses_parent' })
+    assert.equal(parent.threadUrl.includes(THREAD_A), true)
+
+    // A child session asks for its own chat, but Muse hands back the parent's thread.
+    const res = await post(
+      base,
+      { model: 'muse', messages: [{ role: 'user', content: 'child task' }] },
+      { 'x-opencode-session-id': 'ses_child', 'x-muse-thread': 'new' },
+    )
+    assert.equal(res.status, 502)
+    const body = await res.json()
+    assert.match(body.error.message, /already belongs to/i)
+    assert.equal(body.choices, undefined)
+
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, '.muse-threads.json'), 'utf8'))
+    assert.equal(saved.threads['session:ses_child'], undefined)
+    assert.equal(saved.threads['session:ses_parent'].threadId, THREAD_A)
+  }, async (prompt, opts = {}) => {
+    if (opts.newThread) return { reply: 'parent answer', threadUrl: `https://muse.ai/thread/${THREAD_A}` }
+    return { reply: 'ok', threadUrl: `https://muse.ai/thread/${opts.chat}` }
+  })
+})
+
 test('the isolation guard is added to session-routed prompts', async () => {
   await withShim(async ({ base, calls }) => {
     await send(base, 'session one')

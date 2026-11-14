@@ -49,6 +49,23 @@ test('thread store persists a mapping across instances', () => {
   assert.equal(second.get('missing'), null)
 })
 
+test('thread store reports which keys point at a thread', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muse-threads-'))
+  const file = path.join(dir, '.muse-threads.json')
+  const id = '11111111-2222-3333-4444-555555555555'
+  const other = '99999999-2222-3333-4444-555555555555'
+
+  const store = createThreadStore(file)
+  store.set('key-a', id)
+  store.set('key-b', id)
+  store.set('key-c', other)
+
+  assert.deepEqual(store.keysFor(id).sort(), ['key-a', 'key-b'])
+  assert.deepEqual(store.keysFor(other), ['key-c'])
+  assert.deepEqual(store.keysFor('00000000-0000-0000-0000-000000000000'), [])
+  assert.deepEqual(store.keysFor(null), [])
+})
+
 test('thread store backs a corrupt file up instead of throwing', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muse-threads-'))
   const file = path.join(dir, '.muse-threads.json')

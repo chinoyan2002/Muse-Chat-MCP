@@ -88,6 +88,11 @@ export function createThreadStore(file) {
       delete data.threads[key]
       save()
     },
+    /** Every key currently pointing at this thread, so callers can spot a shared chat. */
+    keysFor(threadId) {
+      if (!threadId) return []
+      return Object.keys(data.threads).filter((key) => data.threads[key].threadId === threadId)
+    },
     size() {
       return Object.keys(data.threads).length
     },

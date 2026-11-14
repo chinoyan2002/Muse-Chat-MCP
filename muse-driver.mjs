@@ -233,7 +233,14 @@ class MuseDriver {
     const p = await this.requirePage()
     await this.gotoApp()
     try { await this.waitForComposer(20000) } catch { /* click anyway */ }
-    const before = threadIdFromUrl(p.url())
+    // Muse restores the last route after load. Give it a moment so `before` is the thread
+    // we are leaving; a null here is what let a reverted route look like a new chat in the
+    // post-send check.
+    let before = threadIdFromUrl(p.url())
+    for (let i = 0; i < 10 && !threadIdFromUrl(p.url()) && !/\/thread\/new(?:$|[?#])/i.test(p.url()); i++) {
+      await sleep(200)
+    }
+    before = threadIdFromUrl(p.url())
     // The compose control carries a stable test id; its accessible name is localized
     // ("New side chat" / "新副聊天室"), so never match on the English label alone.
     for (let attempt = 0; attempt < 3; attempt++) {

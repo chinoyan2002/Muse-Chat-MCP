@@ -724,6 +724,19 @@ async function handleChat(req, res, body) {
       if (result && result.threadUnavailable) return
       const threadId = extractThreadId(result && result.threadUrl)
       if (threadId) {
+        if (wantNewThread) {
+          // Muse can answer with the chat we were already in, for example when the app
+          // restores its last route right after the "new chat" click. Binding that id
+          // would silently put two host conversations on one chat, which is exactly what
+          // this map exists to prevent, so refuse the turn instead.
+          const owners = threadStore().keysFor(threadId).filter((key) => key !== threadKey)
+          if (owners.length) {
+            throw new Error(
+              `Muse returned thread ${threadId}, which already belongs to ${owners[0]}; `
+              + 'refusing to share one chat between two conversations',
+            )
+          }
+        }
         threadStore().set(threadKey, threadId)
         if (wantNewThread) log(`bound conversation ${threadKey} to thread ${threadId}`)
         return
