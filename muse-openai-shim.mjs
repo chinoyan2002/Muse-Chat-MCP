@@ -113,7 +113,16 @@ function textOf(content) {
 
 export function buildPrompt(body) {
   const messages = Array.isArray(body.messages) ? body.messages : []
-  const system = messages.filter((m) => m.role === 'system').map((m) => textOf(m.content)).filter(Boolean).join('\n\n')
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  // OpenCode injects a catalog for its Code Mode tools. It is large and only useful
+  // when one of those tools is actually offered, so drop it otherwise.
+  const codeModeCapable = tools.some((t) => /browse|execute|codemode/i.test((t.function || t).name || ''))
+  const system = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => textOf(m.content))
+    .filter(Boolean)
+    .filter((text) => codeModeCapable || !/Code Mode tool catalog/i.test(text))
+    .join('\n\n')
   const lastUserIndex = messages.map((m) => m.role).lastIndexOf('user')
   const lastUser = lastUserIndex >= 0 ? textOf(messages[lastUserIndex].content) : ''
   const callNames = new Map()
@@ -125,11 +134,12 @@ export function buildPrompt(body) {
   const toolResults = messages.slice(lastUserIndex + 1).filter((m) => m.role === 'tool')
   const parts = []
   if (system) parts.push(system)
-  const tools = Array.isArray(body.tools) ? body.tools : []
   if (tools.length && body.tool_choice !== 'none') {
     const schemas = tools.map((t) => t.function || t)
     parts.push([
       'You are responding through an OpenAI-compatible tool bridge.',
+      `Host platform: ${process.platform}. The host application runs on the user's machine.`,
+      'Your own workspace or sandbox is not the host: never answer with files, directories, or command output from it.',
       'When a tool is needed, return ONLY valid JSON in this exact shape:',
       '{"tool_calls":[{"name":"EXACT_TOOL_NAME_FROM_SCHEMA","arguments":{}}]}',
       'Copy the tool name character-for-character from the supplied schema. Never add a namespace or prefix such as muse. or opencode.',
@@ -137,6 +147,7 @@ export function buildPrompt(body) {
       'Use the exact property names from that schema (for example filePath, not path) and the exact JSON types it declares.',
       'Inside JSON strings, escape every Windows backslash as \\\\ or use forward slashes (C:/Users/...).',
       'Do not execute tools, browse, or claim their results. The host application executes tool calls.',
+      'Never claim to have read or listed files unless a tool call produced that result.',
       'If no tool is needed, answer normally.',
       'Available tool schemas:', JSON.stringify(schemas),
     ].join('\n'))
@@ -151,6 +162,47 @@ export function buildPrompt(body) {
     parts.push('Continue the original user request using these results. If another tool is needed, return a new valid tool_calls JSON object.')
   }
   return parts.join('\n\n').trim()
+}
+
+// The host declares its working directory and platform in the system prompt
+// (OpenCode wraps them in <env>). They anchor what "the machine" means.
+function hostEnvironment(messages) {
+  const system = (Array.isArray(messages) ? messages : [])
+    .filter((m) => m.role === 'system')
+    .map((m) => textOf(m.content))
+    .join('\n')
+  const cwd = system.match(/Working directory:\s*([^\n<]+)/i)
+  const platform = system.match(/Platform:\s*(win32|darwin|linux)/i)
+  return {
+    cwd: cwd ? cwd[1].trim() : null,
+    platform: platform ? platform[1].toLowerCase() : process.platform,
+  }
+}
+
+const normalizeDir = (p) => String(p || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+
+/**
+ * True when the reply reports a working directory or sandbox path that the host did
+ * not declare. A model with its own file tools (Muse has /home/hatch) will otherwise
+ * answer from that sandbox and the caller cannot tell it apart from real tool output.
+ */
+export function claimsHostToolResult(reply, messages) {
+  const text = String(reply || '')
+  if (!text) return false
+  const { cwd, platform } = hostEnvironment(messages)
+
+  const claimed = text.match(/(?:目前|當前|现在)?(?:工作目錄|工作目录)[：:\s]*([^\s，。、]+)/)
+    || text.match(/current working directory[^A-Za-z0-9]*([^\s,.;]+)/i)
+  if (claimed && cwd) {
+    const a = normalizeDir(claimed[1])
+    const b = normalizeDir(cwd)
+    if (a && b && a !== b) return true
+  }
+
+  // A Windows host has no /home/<user> or /Users/<user>; such a path can only come
+  // from the model's own sandbox.
+  if (platform === 'win32' && /(?:^|[^\w])\/(?:home|Users)\/[A-Za-z0-9._-]+/.test(text)) return true
+  return false
 }
 
 // Supported JSON Schema subset (OpenAI function calling): type, enum, required,
@@ -392,25 +444,26 @@ export function parseToolCalls(text, tools = [], toolChoice = 'auto') {
 //   - body.files: ["C:\\img.png", "https://.../v.mp4", { url } | { path } | { buffer, name, mimeType }]
 //   - message.content parts: { type: "image_url", image_url: { url } } | { type: "input_image", image_url }
 //   - message.content parts: { type: "file", file: { file_url | file_data, filename, mime_type } }
-function collectFiles(body) {
+export function collectFiles(body) {
   const out = []
   if (Array.isArray(body.files)) for (const f of body.files) if (f) out.push(f)
   const messages = Array.isArray(body.messages) ? body.messages : []
-  for (const m of messages) {
-    if (!Array.isArray(m.content)) continue
-    for (const part of m.content) {
-      if (!part || typeof part === 'string') continue
-      const t = part.type
-      if ((t === 'image_url' || t === 'input_image') && part.image_url) {
-        out.push({ url: typeof part.image_url === 'string' ? part.image_url : part.image_url.url })
-      } else if (t === 'file' && part.file) {
-        const f = part.file
-        if (f.file_url) out.push({ url: f.file_url })
-        else if (f.file_data) {
-          const d = String(f.file_data)
-          if (/^data:/i.test(d)) out.push({ url: d })
-          else out.push({ buffer: d, name: f.filename || 'file', mimeType: f.mime_type || 'application/octet-stream' })
-        }
+  const lastUserIndex = messages.map((m) => m.role).lastIndexOf('user')
+  const current = lastUserIndex >= 0 ? messages[lastUserIndex] : null
+  // Only the current turn's attachments belong to this request. Scanning the whole
+  // history re-attaches old images and files to every new message.
+  for (const part of Array.isArray(current?.content) ? current.content : []) {
+    if (!part || typeof part === 'string') continue
+    const t = part.type
+    if ((t === 'image_url' || t === 'input_image') && part.image_url) {
+      out.push({ url: typeof part.image_url === 'string' ? part.image_url : part.image_url.url })
+    } else if (t === 'file' && part.file) {
+      const f = part.file
+      if (f.file_url) out.push({ url: f.file_url })
+      else if (f.file_data) {
+        const d = String(f.file_data)
+        if (/^data:/i.test(d)) out.push({ url: d })
+        else out.push({ buffer: d, name: f.filename || 'file', mimeType: f.mime_type || 'application/octet-stream' })
       }
     }
   }
@@ -487,6 +540,19 @@ async function requestToolCalls(prompt, opts, body) {
       'Use the exact property names from the schema and escape every Windows backslash as \\\\ or use forward slashes.',
       'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
     ].join('\n')
+  } else if (
+    Array.isArray(body.tools) && body.tools.length
+    && !hasToolResultsAfterLastUser(body.messages)
+    && claimsHostToolResult(first.reply, body.messages)
+  ) {
+    log('retrying a reply that reported results without a tool call:', String(first.reply || '').slice(0, 200).replace(/\s+/g, ' '))
+    correction = [
+      'Your previous reply reported files or a working directory, but no tool ran, so those results did not come from the host.',
+      'Your own workspace or sandbox is not the host machine; never report its files or directories.',
+      'If the request needs a file, a directory, or a command, reply with ONLY {"tool_calls":[{"name":"EXACT_TOOL_NAME","arguments":{}}]} and the host will execute it.',
+      'Use the exact property names from the schema and escape every Windows backslash as \\\\ or use forward slashes.',
+      'Tool schemas:', JSON.stringify((body.tools || []).map((t) => t.function || t)),
+    ].join('\n')
   }
   if (!correction) return { reply: first.reply, calls: null, error: null, threadUrl: first.threadUrl }
 
@@ -505,6 +571,14 @@ async function requestToolCalls(prompt, opts, body) {
       reply: '',
       calls: null,
       error: `tool_choice requires a tool call, but the model answered with text: ${String(second.reply || '').slice(0, 200)}`,
+      threadUrl: second.threadUrl || first.threadUrl,
+    }
+  }
+  if (!retried.calls && claimsHostToolResult(second.reply, body.messages)) {
+    return {
+      reply: '',
+      calls: null,
+      error: 'the model reported file or directory results without requesting a tool call; refusing to pass on results the host cannot verify',
       threadUrl: second.threadUrl || first.threadUrl,
     }
   }
