@@ -1,6 +1,6 @@
 # Muse-Chat-MCP 工作狀態
 
-> 最後更新：2026-11-14 20:30（UTC+8）
+> 最後更新：2026-11-14 20:36（UTC+8）
 > 專案目錄：`C:\Users\User\Muse-Chat-MCP`
 
 ## Git
@@ -12,6 +12,16 @@
 | 本輪提交 | `c159a57`（修正＋測試）、`570bb61`（文件）與後續文件提交（含本檔） |
 | 追蹤分支 | `fork/fix/opencode-tool-calling`（已同步；實際 HEAD 以 `git log -1` 與 `git ls-remote` 為準） |
 | 未提交 | 無（僅刻意不追蹤的 `acceptance-*.mjs`、`muse-login.mjs`） |
+
+## GitHub 同步狀態（2026-11-14 20:36 查詢）
+
+| 項目 | 值 |
+|---|---|
+| 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | `75826c2`（`git ls-remote` 與 API 一致） |
+| PR #1 | open、draft、`mergeable: clean`、無審查留言 |
+| PR 內容 | 26 commits、21 files、+4252／−104 |
+| base `main` | `6c00e8c`（未變動） |
+| 尚未對齊 | PR 說明仍是舊文字（寫 10 tests）；需 token 或由使用者貼上，`gh` 未安裝 |
 
 ## 最後一個 VERIFIED 任務
 
@@ -62,6 +72,7 @@
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
+| GitHub Actions（commit `75826c2`，run 43594662737） | 4/4 jobs success（純文件提交仍跑完整矩陣） |
 | GitHub Actions（commit `c75ec4e`，run 43594541679） | 4/4 jobs success（純文件提交仍跑完整矩陣） |
 | GitHub Actions（commit `570bb61`，run 43594290747） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | GitHub Actions（commit `34cd995`，run 43590192594） | success（4/4 matrix jobs） |

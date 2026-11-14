@@ -54,7 +54,7 @@
 | T27a | 第三輪 P1 補強：外層不以 reply 非空忽略 error | VERIFIED | 非串流錯誤案例 502；driver 只回報**本輪**新出現的錯誤提示，舊提示不誤殺新回覆 |
 | T28 | 第三輪 P2：Thread 建立失敗後的併發恢復 | VERIFIED | 3 個併發請求，失敗後僅一次重建，全部落同一 thread |
 | T29 | 第三輪 P3：假結果偵測邊界 | VERIFIED | 一般路徑說明不誤判；宣稱目錄列表仍攔截；限制已寫入 README |
-| T30 | 第三輪 P4：文件與 PR 說明同步 | IN_PROGRESS | 文件已 commit＋push（`570bb61`）；PR 說明與 Draft→Ready 待使用者裁決 |
+| T30 | 第三輪 P4：文件與 PR 說明同步 | IN_PROGRESS | 文件已 commit＋push（`570bb61`、`c75ec4e`、`75826c2` 及後續文件提交）；PR 說明與 Draft→Ready 待使用者裁決 |
 | T31 | 剩餘實機驗收（T6b、T6d、T6e、T6f 平行、T6g） | PENDING | 需使用者同意後進行 |
 
 ## 3. 已知限制
