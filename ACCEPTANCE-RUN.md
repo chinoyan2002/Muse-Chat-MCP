@@ -368,3 +368,7 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 | D. Side chat 建立失敗時 Desktop 顯示錯誤 | 待做（自動測試已覆蓋 502） |
 | E. 平行 Tool Call、Tool Result Continuation | Continuation 已於 §12.4 通過；平行呼叫待重測 |
 | F. 拒答／假結果重試失敗不得當成功 | 自動測試已覆蓋；實機待做 |
+
+### 13.4 實機使用中的新發現（2026-11-14T12:37–12:39Z，未修正）
+
+使用者以 `muse-local` 實際操作期間，兩個不同 session（`ses_eb1f5bd3…`、`ses_e25efd2c…`）都綁到同一個 Muse thread `ad0cb826…`。`ses_e25efd2c` 的首個請求是 `thread=new`（日誌 12:37:35.691），12:39:12.410 卻綁到既有 thread。這與「一個 session 一個 thread」不符，但原因尚未以測試確認，因此不列為已修正，也不影響 §12.4 的結論（該次 A/B 確實是兩個不同 thread）。

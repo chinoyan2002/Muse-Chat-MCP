@@ -90,6 +90,7 @@
 - 目前行程：node PID `33524`（cmd 啟動器 PID `34436`），2026-11-14T12:18:08Z 開始監聽 `127.0.0.1:8787`。
 - 前一個行程（PID 34592）在下一次操作前已不存在，8787 無監聽者；日誌無崩潰記錄，原因未確認。本輪修正因此是重新啟動後才生效。
 - 啟動後 `/health` → `ok:true`、`browserRunning:false`、`loggedIn:false`；`/v1/models` 回三個 id。尚未有瀏覽器請求，故 `loggedIn:false` 屬預期。
+- 20:36 起使用者實際使用（日誌 12:36–12:39Z 共 10 筆 `chat`），`/health` 現在 `browserRunning:true`、`loggedIn:true`、`composerReady:true`，目前頁面是 thread `ad0cb826…`。此後未再重啟。
 
 ## 已知風險
 
@@ -97,6 +98,7 @@
 2. 若「新副聊天室」控制失效，請求會直接失敗（fail closed），需改 `MUSE_THREAD_MODE=single` 才能繼續。
 3. shim 已兩次無聲結束（原因未確認；最近一次在 2026-11-14 11:24Z 之後、20:17 之前，日誌無錯誤）。目前以 WMI 啟動，長時間穩定性未驗證；結束後 `muse-local` 會直接連線失敗。
 4. 隔離提示不是硬邊界。
+5. **2026-11-14T12:37–12:39Z 實機使用時發現（未修正）**：兩個不同的 OpenCode session（`session:ses_eb1f5bd3…`、`session:ses_e25efd2c…`）在 `.muse-threads.json` 都指向同一個 Muse thread `ad0cb826…`（另有兩個舊鍵也指向它）。日誌顯示 `ses_e25efd2c` 的第一個請求是 `thread=new`（12:37:35.691），卻在 12:39:12.410 綁到既有 thread。原因未確認；最可能是瀏覽器剛啟動，點「新對話」前後都停在上一次的 thread，而當時 `previousThreadId` 取不到值，使「新 uuid」的檢查通過。尚未寫失敗測試，也未重啟（使用者當時正在使用）。
 
 ## 2026-11-14 02:14 第二輪審查
 
