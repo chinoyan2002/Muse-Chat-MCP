@@ -25,9 +25,13 @@
 
 ## 最後一個 VERIFIED 任務
 
-**T29（假結果偵測邊界）**，本輪 T27–T29 全部通過 `npm test` 71/71。
+**T32（新對話被導回別的 session 的 thread）**，`npm test` 73/73。
 
-證據（2026-11-14 20:xx，Node v24.19.0 / Windows 11）：
+證據（2026-11-14 21:00，Node v24.19.0 / Windows 11）：
+
+- 修正前：`thread-routing` 的新案例回 200 並把子 session 綁到父 thread；`thread-map` 因 `keysFor` 不存在而失敗。
+- 修正後：子 session 回 502，訊息為 `Muse returned thread … which already belongs to session:ses_parent`；map 只有父的一筆。
+- 同一批的 T27–T29 仍全過。
 
 - T27：`test/retry-failure.test.mjs` 7 項，修正前全數失敗，修正後全過。
 - T28：`thread-routing` 併發恢復測試，修正前 `attempts=3`，修正後 `attempts=2`。
@@ -49,7 +53,7 @@
 | T10 | VERIFIED | 只接受 `/thread/new`；送出後驗證 uuid |
 | T11 | VERIFIED | `tool_choice: required` 契約 |
 | T12 | VERIFIED | Windows 路徑控制字元 |
-| T13 | VERIFIED | Node 24 完整測試（現 71/71） |
+| T13 | VERIFIED | Node 24 完整測試（現 73/73） |
 | T14 | VERIFIED | session id 順序；缺 id 回 400 |
 | T15 | VERIFIED | SSE 錯誤處理 |
 | T16 | VERIFIED | fail-closed 測試補強 |
@@ -63,12 +67,13 @@
 | T24 | VERIFIED | 協議加入宿主平台與沙箱警語 |
 | T25 | VERIFIED | 無 code-mode 工具時移除其目錄 |
 | T26 | VERIFIED | 重啟後 Desktop 三步驟通過（read 工具實際執行） |
+| T32 | VERIFIED | 新對話若被導回別人的 thread → 502、不綁定（自動測試；執行中的 shim 尚未重啟） |
 
 ## 驗證指令與結果
 
 | 指令 | 結果 |
 |---|---|
-| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 71/71 pass |
+| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 73/73 pass |
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
@@ -98,7 +103,7 @@
 2. 若「新副聊天室」控制失效，請求會直接失敗（fail closed），需改 `MUSE_THREAD_MODE=single` 才能繼續。
 3. shim 已兩次無聲結束（原因未確認；最近一次在 2026-11-14 11:24Z 之後、20:17 之前，日誌無錯誤）。目前以 WMI 啟動，長時間穩定性未驗證；結束後 `muse-local` 會直接連線失敗。
 4. 隔離提示不是硬邊界。
-5. **2026-11-14T12:37–12:39Z 實機使用時發現（未修正）**：兩個不同的 OpenCode session（`session:ses_eb1f5bd3…`、`session:ses_e25efd2c…`）在 `.muse-threads.json` 都指向同一個 Muse thread `ad0cb826…`（另有兩個舊鍵也指向它）。日誌顯示 `ses_e25efd2c` 的第一個請求是 `thread=new`（12:37:35.691），卻在 12:39:12.410 綁到既有 thread。原因未確認；最可能是瀏覽器剛啟動，點「新對話」前後都停在上一次的 thread，而當時 `previousThreadId` 取不到值，使「新 uuid」的檢查通過。尚未寫失敗測試，也未重啟（使用者當時正在使用）。
+5. **2026-11-14T12:37–12:39Z 實機使用時發現（已修，尚未載入執行中的行程）**：使用者只開了一個對話，OpenCode 自己建立子代理（`ses_e25efd2c…`），該子代理的 `thread=new` 請求最後綁到父對話的 thread `ad0cb826…`。原因：`previousThreadId` 取不到值時，舊的「uuid 有變」檢查會放行；Muse 在點擊後回到上一條 thread。修正：`muse-openai-shim.mjs:725-741` 在綁定前檢查該 threadId 是否已屬於其他 key，是就回 502 且不寫入 map；`muse-driver.mjs:236-240` 先把「點擊前的 thread」等穩定再記錄。執行中的 shim（PID `33524`）仍是舊碼，需重啟才生效。
 
 ## 2026-11-14 02:14 第二輪審查
 
@@ -150,8 +155,9 @@
 - 文件：README 移除 `x-session-id` 宣稱、測試數 71；WORK_PLAN／WORK_STATE 的 T6 改為 IN_PROGRESS 並拆成 T6a–T6g；CI 更新為 run 43590192594。
 - 2026-11-14T12:20Z：`c159a57`（修正＋測試）、`570bb61`（文件）已 push 到 `fork/fix/opencode-tool-calling`；CI [run 43594290747](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594290747) 四組合全過。
 - 同日 12:18Z 以 WMI 重新啟動 shim（node PID `33524`），本輪修正已生效。
+- 21:00 追加 T32：實機發現子代理拿到父對話的 thread。修正在綁定前檢查 thread 是否已屬於別的 key，是就 502；driver 先把「點擊前的 thread」等穩定。新增 2 個測試（修正前皆失敗）。執行中的 shim 仍載入舊碼。
 
 ## 下一個動作
 
-1. 更新 PR #1 說明（測試數 71、4/4 matrix、Desktop 已驗與未驗項目），並由使用者裁決是否 Draft → Ready。
+1. 更新 PR #1 說明（測試數 73、4/4 matrix、Desktop 已驗與未驗項目），並由使用者裁決是否 Draft → Ready。
 2. 剩餘實機驗收 T31（T6b、T6d、T6e、T6f 平行、T6g）需使用者同意後進行。

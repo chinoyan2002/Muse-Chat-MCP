@@ -36,7 +36,7 @@
 | T10 | Thread ID 等待與綁定 | VERIFIED | 只接受 `/thread/new`；送出後驗證 uuid 變更 |
 | T11 | `tool_choice: required` 契約 | VERIFIED | 散文回覆會重試；仍無則 502 |
 | T12 | Windows 路徑 JSON 控制字元 | VERIFIED | `C:\temp\new` 保留反斜線 |
-| T13 | Node 24 完整測試 | VERIFIED | v24.19.0（現 71/71） |
+| T13 | Node 24 完整測試 | VERIFIED | v24.19.0（現 73/73） |
 | T14 | 第二輪審查 1：session id 順序（不採 affinity、缺 id 回 400） | VERIFIED | `thread-routing` A–G |
 | T15 | 第二輪審查 2：SSE 錯誤處理（標頭延後、錯誤事件） | VERIFIED | `sse-errors` 6 項 |
 | T16 | 第二輪審查 3：fail-closed 測試改用真實錯誤契約 | VERIFIED | 502＋Map 無新增＋重試仍 newThread；串流結果不得綁舊 thread |
@@ -56,6 +56,7 @@
 | T29 | 第三輪 P3：假結果偵測邊界 | VERIFIED | 一般路徑說明不誤判；宣稱目錄列表仍攔截；限制已寫入 README |
 | T30 | 第三輪 P4：文件與 PR 說明同步 | IN_PROGRESS | 文件已 commit＋push（`570bb61`、`c75ec4e`、`75826c2` 及後續文件提交）；PR 說明與 Draft→Ready 待使用者裁決 |
 | T31 | 剩餘實機驗收（T6b、T6d、T6e、T6f 平行、T6g） | PENDING | 需使用者同意後進行 |
+| T32 | 第三輪追加：新對話被導回別的 session 的 thread | VERIFIED | `thread-routing` 新案例：子 session 取得父 thread → 502、map 不新增；`thread-map` 新增 `keysFor` |
 
 ## 3. 已知限制
 

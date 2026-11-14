@@ -235,7 +235,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 
 | 指令 | 結果 |
 |---|---|
-| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 52 tests / 52 pass / 0 fail（當時；最新為 71/71） |
+| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 52 tests / 52 pass / 0 fail（當時；最新為 73/73） |
 | `node --check muse-openai-shim.mjs`、`muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0（lockfile 完整可重現） |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
@@ -315,7 +315,7 @@ A 的回覆是「目前工作目錄 /home/hatch，前 5 個檔案：AGENTS.md…
 | 協議文字 | 加入 `Host platform` 與「你的沙箱不是主機、不得宣稱未經工具取得的結果」 | 同上 |
 | 提示過長 | 當工具清單沒有 code-mode 工具（browse/execute）時，移除 Code Mode 目錄 system 訊息 | 同上 |
 
-`npm test`：59 tests / 59 pass / 0 fail（當時；最新 71/71）。
+`npm test`：59 tests / 59 pass / 0 fail（當時；最新 73/73）。
 
 ### 12.4 重跑結果（2026-11-14 19:22，新程式已載入）
 
@@ -349,11 +349,11 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 | P1 重試失敗被當成功 | `requestToolCalls` 第二次 driver 失敗時回 `reply:''` 與明確 error；`requiresTool` 時訊息明示需要 tool call。外層不再以「reply 非空」忽略 error；只在 driver 回報**本輪**錯誤時才走 5xx，舊回合殘留的錯誤提示不會誤殺新回覆 | `test/retry-failure.test.mjs` A–F＋鎖釋放，共 7 項；`sse-errors` 新增非串流錯誤案例 |
 | P2 Thread 建立失敗的併發恢復 | 等待者醒來若無綁定會**重新取得鎖**；同一 session 永遠只有一個建立者 | `thread-routing` 三併發案例：修正前 `attempts=3`、修正後 `2` |
 | P3 假結果偵測邊界 | `/home`、`/Users` 僅在回覆同時宣稱目錄列表時才判定；一般說明與程式碼片段不誤判 | `tool-prose-claims` 新增 3 項（一般路徑、宣稱列表、虛構檔名） |
-| P4 文件一致性 | README 移除 `x-session-id`、測試數改 71、新增偵測限制；WORK_PLAN／WORK_STATE 的 T6 拆成 T6a–T6g；CI 更新 | `git diff` 核對 |
+| P4 文件一致性 | README 移除 `x-session-id`、測試數改 73、新增偵測限制；WORK_PLAN／WORK_STATE 的 T6 拆成 T6a–T6g；CI 更新 | `git diff` 核對 |
 
 ### 13.2 證據
 
-- `npm test`：71 tests / 71 pass / 0 fail（Node v24.19.0、Windows 11）。
+- `npm test`：73 tests / 73 pass / 0 fail（Node v24.19.0、Windows 11）。
 - TDD：T27 的 7 項在修正前全數失敗；T28 修正前 `attempts=3`；T29 的邊界案例在放寬前會誤判。
 - CI：commit `570bb61` 的 [run 43594290747](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594290747)、`c75ec4e` 的 [run 43594541679](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594541679)、`75826c2` 的 [run 43594662737](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594662737) 四組合（node 22/24 × ubuntu/windows）全過。
 - `git diff --check`：乾淨。
@@ -369,6 +369,8 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 | E. 平行 Tool Call、Tool Result Continuation | Continuation 已於 §12.4 通過；平行呼叫待重測 |
 | F. 拒答／假結果重試失敗不得當成功 | 自動測試已覆蓋；實機待做 |
 
-### 13.4 實機使用中的新發現（2026-11-14T12:37–12:39Z，未修正）
+### 13.4 實機使用中的新發現（2026-11-14T12:37–12:39Z，已修、尚未載入執行中的行程）
 
-使用者以 `muse-local` 實際操作期間，兩個不同 session（`ses_eb1f5bd3…`、`ses_e25efd2c…`）都綁到同一個 Muse thread `ad0cb826…`。`ses_e25efd2c` 的首個請求是 `thread=new`（日誌 12:37:35.691），12:39:12.410 卻綁到既有 thread。這與「一個 session 一個 thread」不符，但原因尚未以測試確認，因此不列為已修正，也不影響 §12.4 的結論（該次 A/B 確實是兩個不同 thread）。
+使用者只開了一個對話，OpenCode 自行建立子代理（`ses_e25efd2c…`）；該子代理的 `thread=new` 請求在 12:39:12.410Z 綁到父對話的 thread `ad0cb826…`。這與「一個 session 一個 thread」不符。
+修正：`muse-openai-shim.mjs:725-741` 在寫入 map 前檢查該 thread 是否已屬於其他 key，若是則回 502 且不綁定；`muse-driver.mjs:236-240` 先等路由穩定再記錄「點擊前的 thread」。
+測試：`thread-routing` 新增「子 session 取得父 thread → 502、map 不新增」，`thread-map` 新增 `keysFor`；兩者在修正前皆失敗。§12.4 的 A/B 兩個不同 thread 結論不受影響。

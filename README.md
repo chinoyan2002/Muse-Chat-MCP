@@ -222,7 +222,7 @@ for chunk in r:
 - **Plain message** — the shim sends the latest user message **verbatim**: no `### USER/### ASSISTANT` role markers and no "continue the conversation" wrapper. Muse flags roleplay-style wrappers as prompt-injection and refuses them, so the bridge never adds any. Prior context comes from Muse's own thread.
 - **Sessions** — target a chat with header `x-muse-chat: <title|index|url>` (or body `chat`); read chats via `GET /v1/muse/chats` and `GET /v1/muse/chat`.
 - **One thread per conversation** — with `MUSE_THREAD_MODE=session` (default) the shim binds each host conversation to its own Muse Side chat. The key is the client's **unique session id**: OpenCode sends `x-opencode-session-id`; other clients can send `x-muse-session-id`. The headers `x-opencode-session` and `X-Session-Id` (a.k.a. `x-session-id`) are deliberately **not** used: OpenCode fills them with the session *affinity*, which is the parent's id for a child session and the fork source's id for a fork, so sibling subagent sessions share it. A request without a unique id is rejected with HTTP 400 `missing_session_id` (or code `invalid_request_error`) instead of silently sharing a thread; `MUSE_THREAD_KEY=hash` opts back into the legacy prompt-hash key. Bindings persist in `.muse-threads.json` (git-ignored). `single` restores the old "whatever thread is open" behavior; `new` starts a fresh chat per request.
-- **Fail closed** — if the "new side chat" control does not open a fresh thread, the request fails with a 5xx instead of quietly sending into the chat that is already open. Two host conversations never share one Muse thread.
+- **Fail closed** — if the "new side chat" control does not open a fresh thread, the request fails with a 5xx instead of quietly sending into the chat that is already open. The same happens when Muse reports a thread that already belongs to another conversation (for example when it restores the previous route right after the click). Two host conversations never share one Muse thread.
 - **Errors** — thread creation, browser failures and an unsatisfiable `tool_choice: "required"` are detected *before* any SSE header is written, so a failed streaming request is a real HTTP 5xx JSON error, never an empty `200` stream. If a failure happens after the first token, the stream carries `data: {"error":{"message":"…","type":"api_error"}}` and then `[DONE]`. Non-stream requests get the same failures as HTTP 5xx JSON.
 - **Isolation guard** — Muse recalls facts across chats, so a separate chat alone does not stop memory bleed. Session-routed prompts also carry a short instruction to answer only from the current conversation.
 - **Headers** — `x-muse-thread: new` (start a fresh chat), `x-muse-timeout-ms`.
@@ -364,7 +364,7 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 
 `npm test` runs the built-in Node test runner — no browser and no Muse login needed. The suite covers
 tool-call parsing and repair, recursive schema validation, thread routing and isolation, fail-closed
-thread creation, SSE and non-stream error handling, and the MCP zod schema round-trip (71 tests).
+thread creation, SSE and non-stream error handling, and the MCP zod schema round-trip (73 tests).
 CI runs it on Ubuntu and Windows with Node 22 and Node 24, installing the committed lockfile with
 `npm ci`.
 
