@@ -57,6 +57,12 @@ const STREAM_QUIET_MS = Number(process.env.MUSE_STREAM_QUIET_MS || 600)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** Extract the thread uuid from a Muse URL (null for /thread/new or the home page). */
+const threadIdFromUrl = (url) => {
+  const m = String(url || '').match(/\/thread\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)
+  return m ? m[1] : null
+}
+
 class MuseDriver {
   constructor() {
     this.ctx = null
@@ -226,19 +232,84 @@ class MuseDriver {
   async _newChat() {
     const p = await this.requirePage()
     await this.gotoApp()
-    // Prefer the app's own "New side chat" control (reliable); fall back to the home composer.
-    try {
-      const btn = p.getByRole('button', { name: /new side chat/i })
-      if (await btn.count()) {
-        await btn.first().click({ timeout: 5000 })
-        await sleep(1200)
-        await this.waitForComposer()
-        return { ok: true, url: p.url() }
+    try { await this.waitForComposer(20000) } catch { /* click anyway */ }
+    // Muse restores the last route after load. Give it a moment so `before` is the thread
+    // we are leaving; a null here is what let a reverted route look like a new chat in the
+    // post-send check.
+    let before = threadIdFromUrl(p.url())
+    for (let i = 0; i < 10 && !threadIdFromUrl(p.url()) && !/\/thread\/new(?:$|[?#])/i.test(p.url()); i++) {
+      await sleep(200)
+    }
+    before = threadIdFromUrl(p.url())
+    // The compose control carries a stable test id; its accessible name is localized
+    // ("New side chat" / "新副聊天室"), so never match on the English label alone.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await this._clickNewSideChat()) {
+        // /thread/new is the only trustworthy signal that the click opened a new chat.
+        // Accepting "any thread uuid" would also accept the chat we were already in,
+        // and the next message would land in the previous conversation.
+        const route = await this._waitForThreadRoute(6000)
+        if (route.sawNew) {
+          // The composer appears before the new thread is ready; an immediate send
+          // can produce an empty reply, so give the route a moment to settle.
+          await this.waitForComposer()
+          await sleep(1200)
+          return { ok: true, url: p.url(), threadId: threadIdFromUrl(p.url()), previousThreadId: before }
+        }
       }
-    } catch { /* fall through */ }
+      await sleep(800)
+    }
     await p.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: LAUNCH_TIMEOUT })
     await this.waitForComposer()
-    return { ok: true, url: p.url() }
+    return {
+      ok: false,
+      url: p.url(),
+      threadId: threadIdFromUrl(p.url()),
+      previousThreadId: before,
+      warning: 'the new-side-chat control did not open a new thread; refusing to send into the current chat',
+    }
+  }
+
+  async _clickNewSideChat() {
+    const p = await this.requirePage()
+    for (const locator of [
+      p.locator('[data-testid="hatch-chat-compose"]'),
+      p.getByRole('button', { name: /new side chat|新副聊天室|新しいサイドチャット/i }),
+    ]) {
+      try {
+        if (await locator.count()) {
+          await locator.first().click({ timeout: 5000 })
+          return true
+        }
+      } catch { /* try the next locator */ }
+    }
+    return false
+  }
+
+  /** Wait until the app is on /thread/new or /thread/<uuid>. */
+  async _waitForThreadRoute(timeoutMs = 8000) {
+    const p = await this.requirePage()
+    const deadline = Date.now() + timeoutMs
+    let sawNew = false
+    while (Date.now() < deadline) {
+      const url = p.url()
+      if (/\/thread\/new(?:$|[?#])/i.test(url)) sawNew = true
+      if (sawNew || threadIdFromUrl(url)) break
+      await sleep(250)
+    }
+    const url = p.url()
+    return { url, sawNew: sawNew || /\/thread\/new(?:$|[?#])/i.test(url) }
+  }
+
+  /** A fresh side chat only gets its uuid after the first message is sent. */
+  async _waitForThreadId(timeoutMs = 20000) {
+    const p = await this.requirePage()
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (/\/thread\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(p.url())) break
+      await sleep(300)
+    }
+    return p.url()
   }
 
   async newChat() {
@@ -340,13 +411,32 @@ class MuseDriver {
     const hasFiles = Array.isArray(files) && files.length > 0
     if ((!prompt || !prompt.trim()) && !hasFiles) throw new Error('prompt is empty')
     const p = await this.requirePage()
-    if (newThread) await this._newChat()
-    else if (chat !== undefined && chat !== null && chat !== '') await this._openChat(chat)
+    let created = null
+    if (newThread) {
+      created = await this._newChat()
+      // Fail closed: sending into the previously open chat would silently share one
+      // Muse context between two host conversations.
+      if (!created.ok) {
+        return {
+          reply: '',
+          messages: [],
+          threadUrl: p.url(),
+          threadId: null,
+          error: created.warning || 'could not open a new Muse side chat',
+          threadUnavailable: true,
+        }
+      }
+    } else if (chat !== undefined && chat !== null && chat !== '') await this._openChat(chat)
     else await this.gotoApp()
     await this.waitForComposer()
 
-    // Clear any transient error notice.
+    // Clear any transient error notice. A notice left from an earlier turn is still in
+    // the transcript, so mark the ones already present; only a notice that appears after
+    // this send can describe the current reply.
     this.lastError = null
+    await p.locator(SELECTORS.errorNotice).evaluateAll((els) => {
+      for (const el of els) el.setAttribute('data-muse-stale', '1')
+    }).catch(() => {})
 
     // Attach images/videos/files (if any) before typing the prompt.
     if (hasFiles) {
@@ -415,8 +505,9 @@ class MuseDriver {
         }
         if (stop === 0 && ((started && idle > 1200) || (!started && idle > 2500))) break
       }
-      if (await p.locator(SELECTORS.errorNotice).count()) {
-        this.lastError = await p.locator(SELECTORS.errorNotice).first().innerText().catch(() => 'assistant error')
+      const fresh = p.locator(`${SELECTORS.errorNotice}:not([data-muse-stale])`)
+      if (await fresh.count()) {
+        this.lastError = await fresh.first().innerText().catch(() => 'assistant error')
       }
       await sleep(300)
     }
@@ -434,10 +525,28 @@ class MuseDriver {
       try { onDelta(reply) } catch { /* ignore */ }
     }
 
+    // A new side chat is routed to /thread/new until the first message lands; the
+    // uuid appears shortly after. Wait for it so callers can persist the binding.
+    let threadUrl = p.url()
+    if (newThread || /\/thread\/new(?:$|[?#])/i.test(threadUrl)) {
+      threadUrl = await this._waitForThreadId()
+    }
+    const threadId = threadIdFromUrl(threadUrl)
+    if (newThread && (!threadId || threadId === (created && created.previousThreadId))) {
+      return {
+        reply: '',
+        messages: [],
+        threadUrl,
+        threadId: null,
+        error: 'the message could not be confirmed as sent into a fresh Muse thread',
+        threadUnavailable: true,
+      }
+    }
+
     return {
       reply,
       messages: items,
-      threadUrl: p.url(),
+      threadUrl,
       elapsedMs: Date.now() - t0,
       ...(this.lastError ? { error: this.lastError } : {}),
       ...(timedOut ? { timedOut: true } : {}),

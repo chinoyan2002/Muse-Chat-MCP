@@ -1,0 +1,28 @@
+name: Tool calling tests
+
+on:
+  push:
+    branches: [main, "fix/opencode-tool-calling"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The maintainer environment is Windows + Node 24; CI keeps the older
+        # Node 22 / Ubuntu combination as a compatibility guard.
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # The lockfile is committed, so CI installs exactly what was tested locally.
+      - run: npm ci
+      - run: npm test

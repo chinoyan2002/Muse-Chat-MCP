@@ -1,0 +1,457 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { buildPrompt, parseToolCalls, startShim, validateArguments } from '../muse-openai-shim.mjs'
+import { driver } from '../muse-driver.mjs'
+import { closeServer, startTestShim } from '../test-helpers/shim-server.mjs'
+
+const tools = [{
+  type: 'function',
+  function: {
+    name: 'shell',
+    description: 'Run a shell command',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+    },
+  },
+}]
+
+test('accepts an exact advertised tool name and object arguments', () => {
+  const calls = parseToolCalls('{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}', tools)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].function.name, 'shell')
+  assert.deepEqual(JSON.parse(calls[0].function.arguments), { command: 'Get-Location' })
+})
+
+test('accepts JSON fenced tool calls', () => {
+  const calls = parseToolCalls('```json\n{"tool_calls":[{"name":"shell","arguments":{"command":"pwd"}}]}\n```', tools)
+  assert.equal(calls.length, 1)
+})
+
+test('rejects names that are not present in the supplied schema', () => {
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"muse.shell","arguments":{"command":"pwd"}}]}', tools), null)
+})
+
+test('rejects malformed JSON arguments and missing required properties', () => {
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"shell","arguments":"{bad"}]}', tools), null)
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"shell","arguments":{}}]}', tools), null)
+})
+
+test('enforces a specifically selected tool', () => {
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"shell","arguments":{"command":"pwd"}}]}', tools, {
+    type: 'function', function: { name: 'read' },
+  }), null)
+})
+
+test('includes the executed tool name and result in the next Muse prompt', () => {
+  const prompt = buildPrompt({
+    tools,
+    messages: [
+      { role: 'user', content: 'Find the project directory' },
+      { role: 'assistant', tool_calls: [{ id: 'call_1', function: { name: 'shell' } }] },
+      { role: 'tool', tool_call_id: 'call_1', content: 'C:\\Users\\User\\Muse-Chat-MCP' },
+    ],
+  })
+  assert.match(prompt, /Find the project directory/)
+  assert.match(prompt, /Tool name: shell/)
+  assert.match(prompt, /C:\\Users\\User\\Muse-Chat-MCP/)
+})
+
+test('includes every parallel tool result, not just the first', () => {
+  const prompt = buildPrompt({
+    tools,
+    messages: [
+      { role: 'user', content: 'Inspect the project' },
+      {
+        role: 'assistant',
+        tool_calls: [
+          { id: 'call_a', function: { name: 'read', arguments: '{"filePath":"a"}' } },
+          { id: 'call_b', function: { name: 'glob', arguments: '{"pattern":"*"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_a', content: 'RESULT_ALPHA' },
+      { role: 'tool', tool_call_id: 'call_b', content: 'RESULT_BETA' },
+    ],
+  })
+  assert.match(prompt, /Tool name: read[\s\S]*RESULT_ALPHA/)
+  assert.match(prompt, /Tool name: glob[\s\S]*RESULT_BETA/)
+  assert.match(prompt, /Inspect the project/)
+})
+
+test('accepts unescaped Windows backslashes in tool arguments', () => {
+  const calls = parseToolCalls(
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"echo C:\\Users\\User\\Muse-Chat-MCP"}}]}',
+    tools,
+  )
+  assert.equal(calls.length, 1)
+  assert.deepEqual(JSON.parse(calls[0].function.arguments), { command: 'echo C:\\Users\\User\\Muse-Chat-MCP' })
+})
+
+test('retries once with a corrective prompt when a required property is missing', async () => {
+  const readTool = {
+    type: 'function',
+    function: {
+      name: 'read',
+      description: 'Read a file from disk',
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
+    },
+  }
+  const replies = [
+    '{"tool_calls":[{"name":"read","arguments":{"path":"C:/package.json"}}]}',
+    '{"tool_calls":[{"name":"read","arguments":{"filePath":"C:/package.json"}}]}',
+  ]
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return replies[Math.min(prompts.length, replies.length) - 1] },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'Read package.json' }],
+          tools: [readTool],
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'read')
+      assert.deepEqual(JSON.parse(data.choices[0].message.tool_calls[0].function.arguments), { filePath: 'C:/package.json' })
+    },
+  )
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1], /rejected/)
+})
+
+test('recovers when Muse claims it cannot read files instead of calling a tool', async () => {
+  const readTool = {
+    type: 'function',
+    function: {
+      name: 'read',
+      description: 'Read a file or directory from disk',
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
+    },
+  }
+  const replies = [
+    '現象：無法讀取本地工作目錄，No such file or directory。',
+    '{"tool_calls":[{"name":"read","arguments":{"filePath":"C:/Users/User/Documents"}}]}',
+  ]
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return replies[Math.min(prompts.length, replies.length) - 1] },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: '請讀取目前工作目錄' }],
+          tools: [readTool],
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'read')
+    },
+  )
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1], /Never claim you cannot access/i)
+})
+
+test('does not retry a plain prose answer that mentions no access failure', async () => {
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return '目前是星期三。' },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: '今天星期幾？' }],
+          tools: [tools[0]],
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'stop')
+      assert.equal(data.choices[0].message.content, '目前是星期三。')
+    },
+  )
+  assert.equal(prompts.length, 1)
+})
+
+test('does not retry when the turn already contains a tool result', async () => {
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return 'No such file or directory：該檔案不存在。' },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [
+            { role: 'user', content: '讀取 missing.txt' },
+            {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"filePath":"missing.txt"}' } }],
+            },
+            { role: 'tool', tool_call_id: 'call_1', content: 'No such file or directory' },
+          ],
+          tools: [{
+            type: 'function',
+            function: {
+              name: 'read',
+              parameters: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] },
+            },
+          }],
+        }),
+      })
+      await response.json()
+    },
+  )
+  assert.equal(prompts.length, 1)
+})
+
+test('tool_choice=required retries a prose answer and returns the tool call', async () => {
+  const replies = [
+    'I will answer directly: 42.',
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}',
+  ]
+  const prompts = []
+  await withStubbedShim(
+    (prompt) => { prompts.push(prompt); return replies[Math.min(prompts.length, replies.length) - 1] },
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'show the location' }],
+          tools,
+          tool_choice: 'required',
+        }),
+      })
+      const data = await response.json()
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'shell')
+    },
+  )
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1], /requires a tool call/i)
+})
+
+test('tool_choice=required fails the request when no tool call is produced', async () => {
+  await withStubbedShim(
+    'I would rather answer in prose.',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'show the location' }],
+          tools,
+          tool_choice: 'required',
+        }),
+      })
+      assert.equal(response.status, 502)
+      const data = await response.json()
+      assert.match(data.error.message, /requires a tool call/i)
+    },
+  )
+})
+
+test('keeps literal backslashes when JSON escapes would corrupt a Windows path', () => {
+  const readTools = [{
+    type: 'function',
+    function: {
+      name: 'read',
+      parameters: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] },
+    },
+  }]
+  // In the model's reply these are single backslashes, so \t and \n are valid JSON
+  // escapes that would turn into a tab and a newline.
+  const reply = '{"tool_calls":[{"name":"read","arguments":{"filePath":"C:\\temp\\new"}}]}'
+  const calls = parseToolCalls(reply, readTools)
+  assert.equal(JSON.parse(calls[0].function.arguments).filePath, 'C:\\temp\\new')
+})
+
+test('preserves a real newline in a non-path argument', () => {
+  const shellTools = [{
+    type: 'function',
+    function: {
+      name: 'shell',
+      parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+    },
+  }]
+  const reply = '{"tool_calls":[{"name":"shell","arguments":{"command":"echo a\\necho b"}}]}'
+  const calls = parseToolCalls(reply, shellTools)
+  assert.equal(JSON.parse(calls[0].function.arguments).command, 'echo a\necho b')
+})
+
+test('validates nested objects, arrays, enums and bounds', () => {
+  const schema = {
+    type: 'object',
+    required: ['config', 'tags'],
+    additionalProperties: false,
+    properties: {
+      config: {
+        type: 'object',
+        required: ['port'],
+        additionalProperties: false,
+        properties: {
+          port: { type: 'integer', minimum: 1, maximum: 65535 },
+          mode: { type: 'string', enum: ['fast', 'safe'] },
+          name: { type: 'string', minLength: 2, maxLength: 8 },
+          ratio: { type: 'number', minimum: 0, maximum: 1 },
+        },
+      },
+      tags: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } },
+      optional: { type: ['string', 'null'] },
+    },
+  }
+  const ok = {
+    config: { port: 8080, mode: 'fast', name: 'abcd', ratio: 0.5 },
+    tags: ['a', 'b'],
+    optional: null,
+  }
+  assert.equal(validateArguments(ok, schema), true)
+
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, port: '8080' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { mode: 'fast' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, port: 0 } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, port: 70000 } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, mode: 'turbo' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, name: 'a' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, config: { ...ok.config, name: 'toolongname' } }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: 'a' }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: [] }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: ['a', 'b', 'c', 'd'] }, schema), false)
+  assert.equal(validateArguments({ ...ok, tags: [1] }, schema), false)
+  assert.equal(validateArguments({ ...ok, extra: true }, schema), false)
+  assert.equal(validateArguments({ ...ok, optional: 5 }, schema), false)
+})
+
+test('accepts a schema keyword it does not understand instead of rejecting the call', () => {
+  const schema = {
+    type: 'object',
+    properties: { path: { type: 'string', format: 'uri' } },
+    required: ['path'],
+  }
+  assert.equal(validateArguments({ path: 'C:/x' }, schema), true)
+})
+
+test('tool_choice without any tool definition is a request error', async () => {
+  await withStubbedShim(
+    'unused',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'run it' }],
+          tool_choice: 'required',
+        }),
+      })
+      assert.equal(response.status, 400)
+      const data = await response.json()
+      assert.equal(data.error.code, 'missing_tools')
+    },
+  )
+})
+
+async function withStubbedShim(reply, run) {
+  const original = driver.chat
+  const originalMode = process.env.MUSE_THREAD_MODE
+  // These cases are about the OpenAI surface, not thread routing.
+  process.env.MUSE_THREAD_MODE = 'single'
+  driver.chat = async (prompt) => ({ reply: typeof reply === 'function' ? reply(prompt) : reply })
+  const { server, base } = await startTestShim(startShim)
+  try {
+    return await run(base)
+  } finally {
+    driver.chat = original
+    if (originalMode === undefined) delete process.env.MUSE_THREAD_MODE
+    else process.env.MUSE_THREAD_MODE = originalMode
+    await closeServer(server)
+  }
+}
+
+test('HTTP non-stream response returns a validated OpenAI tool call', async () => {
+  await withStubbedShim(
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'Where am I?' }],
+          tools,
+        }),
+      })
+      const data = await response.json()
+      assert.equal(response.status, 200)
+      assert.equal(data.choices[0].finish_reason, 'tool_calls')
+      assert.equal(data.choices[0].message.tool_calls[0].function.name, 'shell')
+    },
+  )
+})
+
+test('HTTP response never forwards an unknown Muse tool name', async () => {
+  await withStubbedShim(
+    '{"tool_calls":[{"name":"muse.shell","arguments":{"command":"Get-Location"}}]}',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          messages: [{ role: 'user', content: 'Where am I?' }],
+          tools,
+        }),
+      })
+      const data = await response.json()
+      // The name is rejected on the first pass and again on the single corrective retry,
+      // so the turn fails instead of passing the raw JSON off as an answer.
+      assert.equal(response.status, 502)
+      assert.equal(data.choices, undefined)
+      assert.match(data.error.message, /unknown tool name/i)
+    },
+  )
+})
+
+test('HTTP SSE response emits OpenAI tool_calls and the matching finish reason', async () => {
+  await withStubbedShim(
+    '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}',
+    async (base) => {
+      const response = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'muse',
+          stream: true,
+          messages: [{ role: 'user', content: 'Where am I?' }],
+          tools,
+        }),
+      })
+      const body = await response.text()
+      assert.equal(response.status, 200)
+      assert.match(body, /"name":"shell"/)
+      assert.match(body, /"finish_reason":"tool_calls"/)
+      assert.ok(body.includes('data: [DONE]'))
+    },
+  )
+})

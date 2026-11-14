@@ -36,7 +36,7 @@ Plus a tiny **CLI** (`muse-cli.mjs`) for one-shot generation from scripts.
 
 ## Requirements
 
-- **Node.js ≥ 18** (tested on v24).
+- **Node.js ≥ 18** (tested on Node 22 and Node 24; CI runs Ubuntu + Windows).
 - **Google Chrome** (or Edge) installed.
 - A **Meta account** with access to Muse.
 - Windows / macOS / Linux (paths in the examples are Windows; adjust for your OS).
@@ -52,6 +52,10 @@ npm install
 ```
 
 `npm install` only pulls `playwright-core` (a library) — it does **not** download a browser.
+
+Dependencies are pinned by the committed `package-lock.json` (CI installs with `npm ci`). `zod` is on 4.6.x,
+which fixes GHSA-mrhx-c7xc-m3w5 (memory exhaustion while validating oversized constrained collections,
+CWE-770, CVSS 7.5, affected `< 4.6.6`). `npm audit` reports no vulnerabilities at the pinned versions.
 
 ## First run (log in once)
 
@@ -206,14 +210,22 @@ for chunk in r:
 }
 ```
 
+> The advertised ids (`muse-spark-1.3`, `muse-spark-1.3-contributor`, `muse`) are **labels only**.
+> Every request goes to the same logged-in Muse chat and `body.model` is echoed back; the shim never
+> switches Muse's own model. Change the model inside muse.ai if you want a different one.
+
 ### Shim behavior
 
 - **Real streaming** — DOM text is re-emitted as OpenAI deltas. Only text that is a *monotonic extension* and has been stable for `MUSE_STREAM_QUIET_MS` (default 600 ms) is emitted; the remainder is flushed at the end. Each stream ends with exactly one `finish_reason`, then `[DONE]`.
-- **Tools** — prompt-injected. Tool schemas are embedded with a *decision-only* rule ("do not execute"), so Muse returns `{"tool_calls":[{"name","arguments"}]}` instead of trying to actually run the action. Parsed into OpenAI `tool_calls` (`finish_reason: "tool_calls"`). Best-effort, not a native function-calling API.
+- **Tools** — prompt-injected. Tool schemas are embedded with a *decision-only* rule ("do not execute"), so Muse returns `{"tool_calls":[{"name","arguments"}]}` instead of trying to actually run the action. Parsed into OpenAI `tool_calls` (`finish_reason: "tool_calls"`). Arguments are checked recursively against a documented JSON Schema subset — `type` (including unions such as `["string","null"]`), `enum`, `required`, `properties`, `additionalProperties`, `items`, `minItems`/`maxItems`, `minLength`/`maxLength`, `minimum`/`maximum`; nested objects and arrays included. A schema keyword outside that subset is accepted rather than rejected, so a richer host schema is never wrongly refused. An unknown tool name is never forwarded. `tool_choice: "required"` is enforced: Muse is asked once more if it answers in prose, and the request fails with HTTP 502 if it still does not call a tool. `tool_choice` without any `tools` is a 400 `missing_tools`. A reply that reports files or directories it never asked the host for (Muse has its own `/home/...` sandbox) is treated the same way: one corrective retry, then 502 instead of passing off unverifiable results. Best-effort, not a native function-calling API.
 - **Attachments** — send images/video via OpenAI multimodal content (`{"type":"image_url","image_url":{"url":…}}`) or a top-level `files` array (local paths / URLs / data-URIs). Muse sees them like a normal chat attachment.
 - **Plain message** — the shim sends the latest user message **verbatim**: no `### USER/### ASSISTANT` role markers and no "continue the conversation" wrapper. Muse flags roleplay-style wrappers as prompt-injection and refuses them, so the bridge never adds any. Prior context comes from Muse's own thread.
 - **Sessions** — target a chat with header `x-muse-chat: <title|index|url>` (or body `chat`); read chats via `GET /v1/muse/chats` and `GET /v1/muse/chat`.
-- **Headers** — `x-muse-thread: new` (navigate to `/` first), `x-muse-timeout-ms`.
+- **One thread per conversation** — with `MUSE_THREAD_MODE=session` (default) the shim binds each host conversation to its own Muse Side chat. The key is the client's **unique session id**: OpenCode sends `x-opencode-session-id`; other clients can send `x-muse-session-id`. The headers `x-opencode-session` and `X-Session-Id` (a.k.a. `x-session-id`) are deliberately **not** used: OpenCode fills them with the session *affinity*, which is the parent's id for a child session and the fork source's id for a fork, so sibling subagent sessions share it. A request without a unique id is rejected with HTTP 400 `missing_session_id` (or code `invalid_request_error`) instead of silently sharing a thread; `MUSE_THREAD_KEY=hash` opts back into the legacy prompt-hash key. Bindings persist in `.muse-threads.json` (git-ignored). `single` restores the old "whatever thread is open" behavior; `new` starts a fresh chat per request.
+- **Fail closed** — if the "new side chat" control does not open a fresh thread, the request fails with a 5xx instead of quietly sending into the chat that is already open. The same happens when Muse reports a thread that already belongs to another conversation (for example when it restores the previous route right after the click). Two host conversations never share one Muse thread.
+- **Errors** — thread creation, browser failures and an unsatisfiable `tool_choice: "required"` are detected *before* any SSE header is written, so a failed streaming request is a real HTTP 5xx JSON error, never an empty `200` stream. If a failure happens after the first token, the stream carries `data: {"error":{"message":"…","type":"api_error"}}` and then `[DONE]`. Non-stream requests get the same failures as HTTP 5xx JSON.
+- **Isolation guard** — Muse recalls facts across chats, so a separate chat alone does not stop memory bleed. Session-routed prompts also carry a short instruction to answer only from the current conversation.
+- **Headers** — `x-muse-thread: new` (start a fresh chat), `x-muse-timeout-ms`.
 
 ---
 
@@ -339,9 +351,25 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 | `MUSE_SHIM_PORT` | `8787` | shim port (`0` disables the shim) |
 | `MUSE_SHIM_HOST` | `127.0.0.1` | shim bind host |
 | `MUSE_SHIM_TIMEOUT_MS` | `240000` | default shim request timeout |
+| `MUSE_THREAD_MODE` | `session` | `session` = one Muse Side chat per conversation, `single` = one shared thread, `new` = fresh chat per request |
+| `MUSE_THREAD_MAP` | `./.muse-threads.json` | conversation → thread bindings (git-ignored) |
+| `MUSE_THREAD_KEY` | `session` | `hash` opts into the legacy prompt-hash conversation key when no unique session id is sent |
 | `MUSE_SHIM_MODELS` | `muse-spark-1.3,muse-spark-1.3-contributor,muse` | advertised model ids |
 | `MUSE_SHIM_URL` | `http://127.0.0.1:8787/v1` | shim base url used by the CLI |
 | `MUSE_CLI_AUTOSTART=0` | off | disable the CLI auto-starting a shim |
+
+---
+
+## Tests
+
+`npm test` runs the built-in Node test runner — no browser and no Muse login needed. The suite covers
+tool-call parsing and repair, recursive schema validation, thread routing and isolation, fail-closed
+thread creation, SSE and non-stream error handling, and the MCP zod schema round-trip (83 tests).
+CI runs it on Ubuntu and Windows with Node 22 and Node 24, installing the committed lockfile with
+`npm ci`.
+
+Real-browser integration — logged-in Chrome talking to Muse, plus OpenCode Desktop — cannot be
+covered by CI. It is run manually and recorded in [`ACCEPTANCE-RUN.md`](ACCEPTANCE-RUN.md).
 
 ---
 
@@ -355,7 +383,10 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 
 ## Limitations
 
-- **One conversation.** Muse is a single persistent thread; the in-app "new chat" control is unreliable. The shim sends the full transcript each call; `x-muse-thread: new` navigates to `/` first (best-effort fresh context).
+- **Muse remembers across chats.** Separate Side chats hide each other's transcript, but Muse can still recall facts from other conversations; the shim therefore adds an isolation guard to every session-routed prompt. Treat it as a strong hint, not a hard boundary.
+- **Fake tool results are only partly detectable.** The shim retries once when a reply claims a working directory other than the one the host declared, or claims a listing under `/home` or `/Users` on Windows. A reply that invents filenames without naming a directory cannot be told apart from a genuine answer.
+- **One conversation per thread.** Multi-thread support relies on Muse's "new side chat" control; if it changes, session-routed requests fail closed rather than sharing a chat. `muse_dump_dom` and `MUSE_THREAD_MODE=single` are the escape hatches.
+- **Existing sessions get a new thread once.** Bindings created before the session-id switch were keyed by prompt hash; those keys are no longer used, so an ongoing OpenCode session starts a fresh Muse Side chat on its next message and loses Muse-side history.
 - **Serialized** — one browser, requests run one at a time (auto-queued).
 - **Tool calling is prompt-injected** — best-effort, not a native function-calling API.
 - **DOM-driven** — a Muse UI change can break selectors; `muse_dump_dom` is the escape hatch.

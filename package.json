@@ -35,7 +35,8 @@
     "start": "node muse-server.mjs",
     "muse": "node muse-cli.mjs",
     "selftest": "node muse-server.mjs --self-test",
-    "dump": "node muse-server.mjs --dump-dom"
+    "dump": "node muse-server.mjs --dump-dom",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
@@ -43,6 +44,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
     "playwright-core": "^1.63.0",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   }
 }
