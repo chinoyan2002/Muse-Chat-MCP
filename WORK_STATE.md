@@ -1,6 +1,6 @@
 # Muse-Chat-MCP 工作狀態
 
-> 最後更新：2026-11-14 02:24（UTC+8）
+> 最後更新：2026-11-14 19:25（UTC+8）
 > 專案目錄：`C:\Users\User\Muse-Chat-MCP`
 
 ## Git
@@ -11,15 +11,18 @@
 | 程式提交 | `8e1d816`（`fix(shim): key threads by the unique session id and fail closed`） |
 | 文件提交 | 本次（`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md`）；以 `git log -1` 為準 |
 | 追蹤分支 | `fork/fix/opencode-tool-calling`（遠端 HEAD `31134f4`） |
-| 未提交 | `muse-openai-shim.mjs`、`package.json`、`package-lock.json`（新）、`.gitignore`、workflow、`test/thread-routing.test.mjs`、`test/tool-calling.test.mjs`、`test/sse-errors.test.mjs`（新）、`test/mcp-schema.test.mjs`（新）、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md`、`acceptance-*.mjs`、`muse-login.mjs` |
+| 未提交 | `muse-openai-shim.mjs`、`test/tool-prose-claims.test.mjs`（新）、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md` |
 
 ## 最後一個 VERIFIED 任務
 
-**T21（測試埠不穩定修正）**，同批 T14–T20 均通過 `npm test` 52/52。
+**T26（重啟後重跑 Desktop 三步驟）**。
 
-證據：`npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11）→ 52 tests / 52 pass / 0 fail；
-新測試在拿掉守衛時實際失敗（`fail-closed result never binds...` 1 fail），恢復後通過；
-`npm audit --json` → `vulnerabilities: {}`；`npm ci --dry-run` → exit 0。
+證據（2026-11-14 19:22，新 session、build agent）：
+
+- A：`ses_e2634a5e…` → `8b1462c1…`；OpenCode session 有 `tool read {"path":"C:/Users/User/Muse-Chat-MCP","limit":5}`，結果為實際專案目錄。
+- shim 日誌：11:22:25 `thread=new` → 11:23:02 綁定 → 11:23:02.702 同一 thread 第二次請求（工具結果續傳）→ 11:24:28 第三次（FIX-820）。
+- B：`ses_e2633d69…` → `8631afde…`；回 `UNKNOWN`。
+- 同批 T22–T25 單元測試 59/59。
 
 ## 任務狀態
 
@@ -46,17 +49,21 @@
 | T19 | VERIFIED | CI matrix 已改並實跑成功（run 43483204976，四組合全過） |
 | T20 | VERIFIED | README 同步 |
 | T21 | VERIFIED | 測試埠不穩定已修正（探測＋重綁、回歸測試） |
+| T22 | VERIFIED | 歷史附件不再重送（只看本輪） |
+| T23 | VERIFIED | 假檔案結果偵測＋重試＋502 |
+| T24 | VERIFIED | 協議加入宿主平台與沙箱警語 |
+| T25 | VERIFIED | 無 code-mode 工具時移除其目錄 |
+| T26 | VERIFIED | 重啟後 Desktop 三步驟通過（read 工具實際執行） |
 
 ## 驗證指令與結果
 
 | 指令 | 結果 |
 |---|---|
-| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 52/52 pass；最終版連續 10 次 0 失敗 |
+| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 59/59 pass |
+| `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
-| `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
-| `git diff --check` | 無空白錯誤 |
-| GitHub Actions（commit `31134f4`，run [43483204976](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43483204976)） | 4/4 jobs success：node 22/24 × ubuntu/windows |
+| GitHub Actions（commit `31134f4`，run 43483204976） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | 路徑解析實測 | naive JSON.parse 得到 char codes 67,58,9,101…（TAB、LF）；shim 得 `C:\temp\new` |
 | CLI 兩輪（新 session，上一輪） | `OK` → `FRESH-900`，同一 thread |
 | `acceptance-threads.mjs`（上一輪） | 4 項全 true（`E:\Temp\opencode\accept-threads-review.log`） |
@@ -89,6 +96,15 @@
   undici 在連線前就拒絕。改為啟動後探測 `/v1/models`，失敗就重綁，並加 `test/shim-port.test.mjs` 回歸測試。
 - shim 仍在執行，本輪未重啟、未跑實機測試。
 
+## 2026-11-14 02:36 Desktop 驗收（隔離通過、工具未執行）
+
+- A：`session:ses_e2a52b683ffeagb7Q06fyHyw0T` → thread `e3518855-62e8-4440-9bf2-f035458b14a9`。
+- B：`session:ses_e29ccccafffeFrcnqwgTNjhoGl` → thread `0c9ed4f1-1c38-4c3f-a0cf-e1e726ec5064`；B 回 `UNKNOWN` → 隔離通過。
+- A 第三步回到同一 thread，回 `GUI-715` → 連續性通過。
+- 工具失敗：A 第一回合只有一次 shim 請求、沒有工具結果的第二次請求；OpenCode session 該回合只有 `text`，沒有 `tool` 區塊；畫面沒有工具卡。回覆的 `/home/hatch` 是 Muse 自己的沙箱。
+- OpenCode 端證據：session `agent: plan`、`location.directory: E:\Temp\opencode`；送給 Muse 的 system 約 38,430 字（含 Plan 提醒與 Code Mode browse 目錄）；`files=2` 來自歷史訊息附件被重送。
+- 已修正（未提交、需重啟才生效）：`collectFiles` 只看本輪、`claimsHostToolResult` 假結果偵測＋一次重試＋502、協議加入宿主平台與沙箱警語、無 code-mode 工具時移除其目錄。`npm test` 59/59。
+
 ## 2026-11-14 02:00 併用事故與修復
 
 - 事故：修正期間使用者在 `push-to-talk` 專案（session `ses_eb1f5bd3…`）同時使用 Muse；
@@ -109,7 +125,6 @@
 
 ## 下一個動作
 
-1. 使用者在 Desktop GUI 依 `ACCEPTANCE-RUN.md` 第 11.3 節驗收（A–J 清單＋三步驟），完成後據實記錄結果。
-2. 使用者裁決是否 commit / push 本輪修改（含 lockfile 與 workflow）並更新 PR #1 說明。
-3. push 後確認 Actions 在 Node 22/24 × Ubuntu/Windows 皆通過（目前 T19 尚未驗證）。
-4. 若要 push，建議拆成 4 個 commit：session id 順序／SSE 錯誤／schema 與依賴／CI 與文件。
+1. 使用者裁決是否 commit / push 本輪（T22–T26）修正並更新 PR #1 說明。
+2. 若要 push，建議 commit：`fix(shim): ignore foreign sandbox results and stale attachments`＋文件。
+3. 可選：以變體實驗隔離「Plan 模式／歷史附件」對工具呼叫的影響（非驗收必要）。

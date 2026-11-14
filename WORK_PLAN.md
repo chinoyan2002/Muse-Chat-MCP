@@ -22,7 +22,7 @@
 | T3 | 併發首請求只建立一個 Side chat | VERIFIED | `test/thread-routing.test.mjs` 併發測試 |
 | T4 | Muse 以散文拒答「無法讀取」時重試一次並要求工具呼叫 | VERIFIED | 單元測試 3 項＋實機重現後通過 |
 | T5 | shim 崩潰可觀測性（時間戳、uncaught 記錄） | VERIFIED | 日誌含 ISO 時間戳；`npm test` |
-| T6 | Desktop GUI 人工點擊驗收（含 PR 審查 A–J） | PENDING | 使用者依 `ACCEPTANCE-RUN.md` 第 11.3 節操作 |
+| T6 | Desktop GUI 人工點擊驗收（含 PR 審查 A–J） | VERIFIED | 2026-11-14 19:22 新 session 通過（見 ACCEPTANCE §12.4） |
 | T7 | `zod` 4.x 升級 | VERIFIED | `zod@4.6.7`；`npm audit` 0；`mcp-schema` 測試通過；MCP 實機未重跑 |
 | T8 | Side chat 建立失敗改為 fail closed | VERIFIED | 建立失敗不送出；不退回目前對話 |
 | T9 | Session 識別改用唯一 session id | VERIFIED | 同 session 重用、不同 session 分開、標題請求獨立 |
@@ -38,6 +38,11 @@
 | T19 | 第二輪審查 6：CI Node 22/24 × Ubuntu/Windows | VERIFIED | run 43483204976：4/4 jobs success |
 | T20 | 第二輪審查 8：README 同步 | VERIFIED | 已更新 session id、SSE 錯誤、schema、測試數 |
 | T21 | 測試埠不穩定（fetch 封鎖埠） | VERIFIED | 探測 `/v1/models` 後重綁；`test/shim-port.test.mjs` 回歸測試；最終版連續 10 次全過 |
+| T22 | 歷史附件重送 | VERIFIED | `collectFiles` 只看本輪；單元測試 |
+| T23 | 假檔案結果（Muse 沙箱）偵測與重試 | VERIFIED | 重試一次；仍假回 502；單元測試 |
+| T24 | 工具協議加入宿主平台與沙箱警語 | VERIFIED | `tool-prose-claims.test.mjs` |
+| T25 | 移除無用的 Code Mode 目錄 | VERIFIED | 無 code-mode 工具時不送；單元測試 |
+| T26 | 重啟 shim 後重跑 Desktop 三步驟 | VERIFIED | `read` 工具實際執行；A/B 不同 thread；B 回 UNKNOWN；A 續回 FIX-820 |
 
 ## 3. 已知限制
 

@@ -282,5 +282,59 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 2. 本輪修正已 commit（程式 `8e1d816`；文件提交見 `git log`）並推上 `fork/fix/opencode-tool-calling`。
 3. PR #1 說明尚未更新（需使用者同意張貼）。
 
+## 12. Desktop GUI 實測與「假成功」修正（2026-11-14 02:36）
+
+### 12.1 實測結果
+
+使用者在 OpenCode Desktop（`muse-local/muse-spark-1.3`）以既有 session 操作，結果：
+
+| 項目 | 結果 | 證據 |
+|---|---|---|
+| A/B 是否不同 thread | **PASS** | `session:ses_e2a52b683ffeagb7Q06fyHyw0T` → `e3518855-…`；`session:ses_e29ccccafffeFrcnqwgTNjhoGl` → `0c9ed4f1-…` |
+| B 是否記得 A 的代號 | **PASS（回 UNKNOWN）** | 使用者實際回報 |
+| A 是否延續 | **PASS（回 GUI-715）** | 第三次請求走同一 thread `e3518855-…` |
+| 工具是否由主機執行 | **FAIL** | 畫面沒有工具卡；OpenCode session 紀錄該回合只有 `text`、沒有 `tool` 區塊；shim 日誌該回合只有一次請求（沒有工具結果的第二次請求） |
+
+A 的回覆是「目前工作目錄 /home/hatch，前 5 個檔案：AGENTS.md…」——那是 **Muse 自己的沙箱**，不是主機的 `E:\Temp\opencode`。
+
+### 12.2 從 OpenCode 端取得的證據
+
+以本機 API（`http://127.0.0.1:28894`，Basic auth，密碼取自 `%USERPROFILE%\.local\state\opencode\service.json`）讀取 Session A：
+
+- session：`agent: plan`、`model: muse-local/muse-spark-1.3`、`location.directory: E:\Temp\opencode`
+- 該回合 assistant：`content: [{type:"text"}]`、`finish: "stop"`，沒有工具呼叫
+- 送給 Muse 的 system 內容約 38,430 字，包含 Plan 模式提醒與 Code Mode 的 browse 工具目錄
+- shim 日誌顯示該請求 `files=2`：`collectFiles` 會掃描**全部歷史訊息**，把舊訊息裡的附件重送（獨立缺陷）
+
+### 12.3 已修正（單元測試通過，實機待驗）
+
+| 項目 | 修正 | 測試 |
+|---|---|---|
+| 歷史附件重送 | `collectFiles` 只看 `body.files` 與**最後一則 user** 訊息 | `tool-prose-claims.test.mjs` |
+| 假檔案結果 | 新增 `claimsHostToolResult()`：回覆聲稱的工作目錄與 system prompt 的 `Working directory` 不符、或 Windows 主機出現 `/home/*`、`/Users/*` 時視為假結果；重試一次，仍假則 502 | 同上（重試成功、重複假答 502、正常散文不重試） |
+| 協議文字 | 加入 `Host platform` 與「你的沙箱不是主機、不得宣稱未經工具取得的結果」 | 同上 |
+| 提示過長 | 當工具清單沒有 code-mode 工具（browse/execute）時，移除 Code Mode 目錄 system 訊息 | 同上 |
+
+`npm test`：59 tests / 59 pass / 0 fail（Node v24.19.0、Windows 11）。
+
+### 12.4 重跑結果（2026-11-14 19:22，新程式已載入）
+
+新開 session、預設 build agent、模型 `muse-local/muse-spark-1.3`、工作目錄 `C:\Users\User\Muse-Chat-MCP`：
+
+| 項目 | 結果 | 證據 |
+|---|---|---|
+| A 是否真的執行工具 | **PASS** | OpenCode session `ses_e2634a5e…` 有 `tool` 區塊：`read {"path":"C:/Users/User/Muse-Chat-MCP","limit":5}`，結果 `.git\`、`.github\`、`.muse-profile\`、`docs\`、`examples\` |
+| A 是否只有一次請求 | **PASS（有工具續傳）** | shim 日誌 11:22:25 `thread=new` → 11:23:02 綁定 → 11:23:02.702 同一 thread 再送一次（工具結果續傳） |
+| A/B 是否不同 thread | **PASS** | A `ses_e2634a5e…` → `8b1462c1…`；B `ses_e2633d69…` → `8631afde…` |
+| B 是否記得 A 的代號 | **PASS（UNKNOWN）** | 使用者實測 |
+| A 是否延續 | **PASS（FIX-820）** | 第三次請求走同一 thread `8b1462c1…` |
+
+備註：這次第一次嘗試就回工具呼叫，**沒有觸發**新的假結果重試；送出的提示量是 47,838 字，比上次失敗的 38,430 還大。因此上次失敗較可能與「舊 session／Plan 模式／歷史附件」有關，而不是單純提示長度。T22–T25 仍保留為防禦性修正（單元測試覆盖），但不可宣稱它們是這次通過的原因。
+
+### 12.5 尚未完成
+
+- 上述修正已套用到執行中的 shim（PID 34592），Desktop 三步驟已在新 session 通過（12.4）。
+- 舊 session／Plan 模式的失敗原因只到「相關性」層級，尚未以變體實驗證明因果。
+
 
 
