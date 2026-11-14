@@ -103,8 +103,8 @@ test('B: a fake file listing whose retry fails never leaks the fake results', as
   const file = path.join(res.dir, '.muse-threads.json')
   const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { threads: {} }
   const bound = saved.threads['session:ses_retry']
-  // Either unbound or bound to the thread this conversation actually used.
-  assert.ok(!bound || bound.threadId === THREAD_A)
+  // The failed turn never reaches the bind step, so the key stays unbound.
+  assert.equal(bound, undefined)
 })
 
 test('C: tool_choice=required with a failing retry is a 502, never prose', async () => {
@@ -161,6 +161,139 @@ test('F: a tool turn whose driver reports an error is not parsed into a reply', 
   assert.equal(res.status, 502)
   const text = await res.text()
   assert.doesNotMatch(text, /tool_calls/)
+})
+
+test('G: a retry that returns partial text together with an error is a 502', async () => {
+  const res = await withSequence(
+    [{ reply: '無法讀取本機檔案：permission denied' }, { reply: 'partial answer', error: 'page crashed' }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'list the files' }], tools }),
+  )
+  assert.equal(res.status, 502)
+  const text = await res.text()
+  assert.doesNotMatch(text, /partial answer/)
+  assert.match(text, /page crashed/)
+})
+
+test('H: a retry that reports a fake listing plus an error leaks nothing', async () => {
+  const fake = '目前工作目錄 /home/hatch，前 5 個檔案：\n\nAGENTS.md'
+  const res = await withSequence(
+    [{ reply: '無法讀取本機檔案：permission denied' }, { reply: 'fake listing', error: 'page crashed' }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'list the files' }], tools }),
+  )
+  assert.equal(res.status, 502)
+  const text = await res.text()
+  assert.doesNotMatch(text, /fake listing/)
+  assert.doesNotMatch(text, /home\/hatch/)
+})
+
+test('I: a retry that returns a tool call plus an error is refused', async () => {
+  const res = await withSequence(
+    [{ reply: '無法讀取本機檔案：permission denied' },
+      { reply: '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}', error: 'page crashed' }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'run it' }], tools }),
+  )
+  assert.equal(res.status, 502)
+  const text = await res.text()
+  assert.doesNotMatch(text, /tool_calls/)
+  assert.doesNotMatch(text, /Get-Location/)
+})
+
+test('J: tool_choice=required with a retry that has text and an error is a 502', async () => {
+  const res = await withSequence(
+    [{ reply: 'I would rather answer in prose.' }, { reply: 'still prose', error: 'page crashed' }],
+    ({ base }) => post(base, {
+      messages: [hostEnv, { role: 'user', content: 'run it' }],
+      tools,
+      tool_choice: 'required',
+    }),
+  )
+  assert.equal(res.status, 502)
+  const text = await res.text()
+  assert.doesNotMatch(text, /still prose/)
+  assert.match(text, /tool call/i)
+})
+
+test('K: the streaming variant of a text-plus-error retry is a 502 JSON, not a partial stream', async () => {
+  const res = await withSequence(
+    [{ reply: '無法讀取本機檔案：permission denied' }, { reply: 'partial answer', error: 'page crashed' }],
+    ({ base }) => post(base, {
+      messages: [hostEnv, { role: 'user', content: 'list the files' }],
+      tools,
+      stream: true,
+    }),
+  )
+  assert.equal(res.status, 502)
+  assert.match(res.headers.get('content-type') || '', /application\/json/)
+  const text = await res.text()
+  assert.doesNotMatch(text, /partial answer/)
+})
+
+test('L: a corrected reply that is still malformed JSON is a 502', async () => {
+  const bad = '{"tool_calls":[{"name":"shell","arguments":"not json}]}'
+  const res = await withSequence(
+    [{ reply: bad }, { reply: bad }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'run it' }], tools }),
+  )
+  assert.equal(res.status, 502)
+  const body = await res.json()
+  assert.match(body.error.message, /invalid|malformed|tool/i)
+  assert.equal(body.choices, undefined)
+})
+
+test('M: a corrected reply that still names an unknown tool is a 502', async () => {
+  const bad = '{"tool_calls":[{"name":"rm_rf","arguments":{}}]}'
+  const res = await withSequence(
+    [{ reply: bad }, { reply: bad }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'run it' }], tools }),
+  )
+  assert.equal(res.status, 502)
+  const body = await res.json()
+  assert.match(body.error.message, /unknown tool name/i)
+  assert.equal(body.choices, undefined)
+})
+
+test('N: a corrected reply whose arguments still violate the schema is a 502', async () => {
+  const bad = '{"tool_calls":[{"name":"shell","arguments":{}}]}'
+  const res = await withSequence(
+    [{ reply: bad }, { reply: bad }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'run it' }], tools }),
+  )
+  assert.equal(res.status, 502)
+  const body = await res.json()
+  assert.match(body.error.message, /invalid arguments/i)
+  assert.equal(body.choices, undefined)
+})
+
+test('O: auto mode still accepts a plain prose retry that never attempts a tool call', async () => {
+  const res = await withSequence(
+    [{ reply: '無法讀取本機檔案：permission denied' }, { reply: 'The answer is 42.' }],
+    ({ base }) => post(base, { messages: [hostEnv, { role: 'user', content: 'what is it' }], tools }),
+  )
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.choices[0].message.content, 'The answer is 42.')
+  assert.equal(body.choices[0].finish_reason, 'stop')
+  assert.equal(body.choices[0].message.tool_calls, undefined)
+})
+
+test('a text-plus-error retry failure also releases the lock', async () => {
+  const replies = [
+    { reply: '無法讀取本機檔案：permission denied' },
+    { reply: 'partial answer', error: 'page crashed' },
+    { reply: '{"tool_calls":[{"name":"shell","arguments":{"command":"Get-Location"}}]}', threadUrl: `https://muse.ai/thread/${THREAD_A}` },
+  ]
+  await withSequence(replies, async ({ base, dir }) => {
+    const first = await post(base, { messages: [hostEnv, { role: 'user', content: 'one' }], tools })
+    assert.equal(first.status, 502)
+
+    const second = await post(base, { messages: [hostEnv, { role: 'user', content: 'two' }], tools })
+    assert.equal(second.status, 200)
+    const body = await second.json()
+    assert.equal(body.choices[0].finish_reason, 'tool_calls')
+
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, '.muse-threads.json'), 'utf8'))
+    assert.equal(saved.threads['session:ses_retry'].threadId, THREAD_A)
+  }, { mode: 'session', threadMap: true })
 })
 
 test('a retry failure releases the lock so the next request still completes', async () => {

@@ -561,10 +561,11 @@ async function requestToolCalls(prompt, opts, body) {
   if (!correction) return { reply: first.reply, calls: null, error: null, threadUrl: first.threadUrl }
 
   const second = await driver.chat(correction, { ...opts, newThread: false })
-  if (second.error && !second.reply) {
+  if (second.error) {
     // The retry carried the correction, so its failure means the first reply was never
-    // validated. Returning that reply would pass off a rejected or fabricated answer
-    // as success, which is exactly what the tool_choice and sandbox guards prevent.
+    // validated. Returning that reply (or the partial text beside this error) would pass
+    // off a rejected or fabricated answer as success, which is exactly what the
+    // tool_choice and sandbox guards prevent.
     log('corrective retry failed:', second.error)
     return {
       reply: '',
@@ -576,6 +577,17 @@ async function requestToolCalls(prompt, opts, body) {
     }
   }
   const retried = parseToolCallsDetailed(second.reply, body.tools, body.tool_choice)
+  if (retried.attempted && !retried.calls) {
+    // The correction produced another tool call that failed validation. Returning the
+    // raw JSON as assistant text would look like a successful answer and hide the fact
+    // that no tool ran.
+    return {
+      reply: '',
+      calls: null,
+      error: `the corrected tool call was still rejected: ${retried.error}`,
+      threadUrl: second.threadUrl || first.threadUrl,
+    }
+  }
   if (!retried.calls && requiresTool) {
     return {
       reply: '',

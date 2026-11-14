@@ -424,10 +424,11 @@ test('HTTP response never forwards an unknown Muse tool name', async () => {
         }),
       })
       const data = await response.json()
-      assert.equal(response.status, 200)
-      assert.equal(data.choices[0].finish_reason, 'stop')
-      assert.equal(data.choices[0].message.tool_calls, undefined)
-      assert.ok(data.choices[0].message.content.includes('muse.shell'))
+      // The name is rejected on the first pass and again on the single corrective retry,
+      // so the turn fails instead of passing the raw JSON off as an answer.
+      assert.equal(response.status, 502)
+      assert.equal(data.choices, undefined)
+      assert.match(data.error.message, /unknown tool name/i)
     },
   )
 })
