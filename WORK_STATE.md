@@ -11,17 +11,17 @@
 | 第三輪基準 | `34cd995`（本輪以前） |
 | 本輪提交 | `c159a57`（修正＋測試）、`570bb61`（文件）與後續文件提交（含本檔） |
 | 追蹤分支 | `fork/fix/opencode-tool-calling`（已同步；實際 HEAD 以 `git log -1` 與 `git ls-remote` 為準） |
-| 未提交 | 無（僅刻意不追蹤的 `acceptance-*.mjs`、`muse-login.mjs`） |
+| 未提交 | 本次文件更新（`WORK_STATE.md`、`WORK_PLAN.md`）；程式已全部提交 |
 
 ## GitHub 同步狀態（2026-11-14 20:36 查詢）
 
 | 項目 | 值 |
 |---|---|
 | 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | 一致（實值以 `git log -1`、`git ls-remote` 為準；20:36 查詢時皆為 `75826c2`，20:39 push 後皆為 `9229860`） |
-| PR #1 | open、draft、`mergeable: clean`、無審查留言 |
+| PR #1 | open、**ready for review（非 draft）**、`mergeable: clean`、無審查留言 |
 | PR 內容 | 27 commits、21 files、+4265／−104（2026-11-14 20:39 查詢） |
 | base `main` | `6c00e8c`（未變動） |
-| 尚未對齊 | PR 說明仍是舊文字（寫 10 tests）；需 token 或由使用者貼上，`gh` 未安裝 |
+| 說明已對齊 | PR 本文已改為 73 tests、run 43597353526、Desktop 已驗與未驗清單（2026-11-14 21:05） |
 
 ## 最後一個 VERIFIED 任務
 
@@ -92,10 +92,10 @@
 
 - shim 由 `E:\Temp\opencode\start-muse-shim.cmd` 啟動（WMI 建立，非 shell 子行程）。
 - 日誌：`E:\Temp\opencode\muse-shim.err.log`。
-- 目前行程：node PID `33524`（cmd 啟動器 PID `34436`），2026-11-14T12:18:08Z 開始監聽 `127.0.0.1:8787`。
-- 前一個行程（PID 34592）在下一次操作前已不存在，8787 無監聽者；日誌無崩潰記錄，原因未確認。本輪修正因此是重新啟動後才生效。
-- 啟動後 `/health` → `ok:true`、`browserRunning:false`、`loggedIn:false`；`/v1/models` 回三個 id。尚未有瀏覽器請求，故 `loggedIn:false` 屬預期。
-- 20:36 起使用者實際使用（日誌 12:36–12:39Z 共 10 筆 `chat`），`/health` 現在 `browserRunning:true`、`loggedIn:true`、`composerReady:true`，目前頁面是 thread `ad0cb826…`。此後未再重啟。
+- 目前行程：node PID `33092`（cmd 啟動器 PID `34288`），2026-11-14 21:02:37（本機）開始監聽 `127.0.0.1:8787`。這是清 map 後重啟的行程，載入 T32 修正。
+- 前一個行程 PID `33524` 於 21:01 由使用者授權後手動停止；停止前 `/health` 為 `browserRunning:true`、`loggedIn:true`，頁面停在 `ad0cb826…`。
+- 重啟後 `/health` → `ok:true`、`browserRunning:false`、`loggedIn:false`；`/v1/models` 回三個 id。第一則請求才會重新啟動瀏覽器（`.muse-profile` 會保留登入）。
+- 另一個更早的行程（PID 34592）在下一次操作前已不存在；日誌無崩潰記錄，原因未確認。
 
 ## 已知風險
 
@@ -103,7 +103,7 @@
 2. 若「新副聊天室」控制失效，請求會直接失敗（fail closed），需改 `MUSE_THREAD_MODE=single` 才能繼續。
 3. shim 已兩次無聲結束（原因未確認；最近一次在 2026-11-14 11:24Z 之後、20:17 之前，日誌無錯誤）。目前以 WMI 啟動，長時間穩定性未驗證；結束後 `muse-local` 會直接連線失敗。
 4. 隔離提示不是硬邊界。
-5. **2026-11-14T12:37–12:39Z 實機使用時發現（已修，尚未載入執行中的行程）**：使用者只開了一個對話，OpenCode 自己建立子代理（`ses_e25efd2c…`），該子代理的 `thread=new` 請求最後綁到父對話的 thread `ad0cb826…`。原因：`previousThreadId` 取不到值時，舊的「uuid 有變」檢查會放行；Muse 在點擊後回到上一條 thread。修正：`muse-openai-shim.mjs:725-741` 在綁定前檢查該 threadId 是否已屬於其他 key，是就回 502 且不寫入 map；`muse-driver.mjs:236-240` 先把「點擊前的 thread」等穩定再記錄。執行中的 shim（PID `33524`）仍是舊碼，需重啟才生效。
+5. **2026-11-14T12:37–12:39Z 實機使用時發現（已修並已載入）**：使用者只開了一個對話，OpenCode 自己建立子代理（`ses_e25efd2c…`），該子代理的 `thread=new` 請求最後綁到父對話的 thread `ad0cb826…`。原因：`previousThreadId` 取不到值時，舊的「uuid 有變」檢查會放行；Muse 在點擊後回到上一條 thread。修正：`muse-openai-shim.mjs:725-741` 在綁定前檢查該 threadId 是否已屬於其他 key，是就回 502 且不寫入 map；`muse-driver.mjs:236-240` 先把「點擊前的 thread」等穩定再記錄。已於 21:01 重啟，新碼生效。21:02 已刪除該子代理與 legacy 雜湊鍵的綁定（備份保留），map 現無共用 thread。
 
 ## 2026-11-14 02:14 第二輪審查
 
@@ -155,9 +155,10 @@
 - 文件：README 移除 `x-session-id` 宣稱、測試數 71；WORK_PLAN／WORK_STATE 的 T6 改為 IN_PROGRESS 並拆成 T6a–T6g；CI 更新為 run 43590192594。
 - 2026-11-14T12:20Z：`c159a57`（修正＋測試）、`570bb61`（文件）已 push 到 `fork/fix/opencode-tool-calling`；CI [run 43594290747](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43594290747) 四組合全過。
 - 同日 12:18Z 以 WMI 重新啟動 shim（node PID `33524`），本輪修正已生效。
-- 21:00 追加 T32：實機發現子代理拿到父對話的 thread。修正在綁定前檢查 thread 是否已屬於別的 key，是就 502；driver 先把「點擊前的 thread」等穩定。新增 2 個測試（修正前皆失敗）。執行中的 shim 仍載入舊碼。
+- 21:00 追加 T32：實機發現子代理拿到父對話的 thread。修正在綁定前檢查 thread 是否已屬於別的 key，是就 502；driver 先把「點擊前的 thread」等穩定。新增 2 個測試（修正前皆失敗）。21:01 依使用者授權重啟（PID `23364`），新碼已生效。21:02 刪除 `ses_e25efd2c…` 與 legacy 雜湊鍵的綁定（備份 `.muse-threads.json.bak-20261114-210224`），再次重啟（PID `33092`）；map 現 26 筆、無共用 thread。
+- 21:05 PR #1 本文更新為 73 tests、run 43597353526，並以 GraphQL `markPullRequestReadyForReview` 改為 ready（非 draft）。
 
 ## 下一個動作
 
-1. 更新 PR #1 說明（測試數 73、4/4 matrix、Desktop 已驗與未驗項目），並由使用者裁決是否 Draft → Ready。
+1. PR #1 說明與狀態已對齊（73 tests、ready for review）；後續只剩實機驗收與審查意見。
 2. 剩餘實機驗收 T31（T6b、T6d、T6e、T6f 平行、T6g）需使用者同意後進行。
