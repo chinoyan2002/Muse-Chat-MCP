@@ -331,6 +331,8 @@ A 的回覆是「目前工作目錄 /home/hatch，前 5 個檔案：AGENTS.md…
 
 備註：這次第一次嘗試就回工具呼叫，**沒有觸發**新的假結果重試；送出的提示量是 47,838 字，比上次失敗的 38,430 還大。因此上次失敗較可能與「舊 session／Plan 模式／歷史附件」有關，而不是單純提示長度。T22–T25 仍保留為防禦性修正（單元測試覆盖），但不可宣稱它們是這次通過的原因。
 
+CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43590078913) 四組合全過（node 22/24 × ubuntu/windows）。
+
 ### 12.5 尚未完成
 
 - 上述修正已套用到執行中的 shim（PID 34592），Desktop 三步驟已在新 session 通過（12.4）。

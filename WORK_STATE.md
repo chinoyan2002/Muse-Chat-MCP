@@ -64,6 +64,7 @@
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
 | GitHub Actions（commit `31134f4`，run 43483204976） | 4/4 jobs success：node 22/24 × ubuntu/windows |
+| GitHub Actions（commit `3fdb492`，run 43590078913） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | 路徑解析實測 | naive JSON.parse 得到 char codes 67,58,9,101…（TAB、LF）；shim 得 `C:\temp\new` |
 | CLI 兩輪（新 session，上一輪） | `OK` → `FRESH-900`，同一 thread |
 | `acceptance-threads.mjs`（上一輪） | 4 項全 true（`E:\Temp\opencode\accept-threads-review.log`） |
