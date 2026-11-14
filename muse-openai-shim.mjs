@@ -199,9 +199,11 @@ export function claimsHostToolResult(reply, messages) {
     if (a && b && a !== b) return true
   }
 
-  // A Windows host has no /home/<user> or /Users/<user>; such a path can only come
-  // from the model's own sandbox.
-  if (platform === 'win32' && /(?:^|[^\w])\/(?:home|Users)\/[A-Za-z0-9._-]+/.test(text)) return true
+  // A Windows host has no /home/<user> or /Users/<user>; such a path combined with a
+  // claim of having listed the host files can only come from the model's own sandbox.
+  // A bare path mention (documentation, cross-platform example) is not a claim.
+  const claimsListing = /工作目錄|工作目录|目錄內容|目录内容|目錄下|目录下|current (?:working )?directory|directory (?:listing|contents)|前\s*\d+\s*(?:個檔案|个文件)/i.test(text)
+  if (platform === 'win32' && claimsListing && /(?:^|[^\w])\/(?:home|Users)\/[A-Za-z0-9._-]+/.test(text)) return true
   return false
 }
 
@@ -506,7 +508,9 @@ async function requestToolCalls(prompt, opts, body) {
   const requiresTool = body.tool_choice === 'required'
     || (body.tool_choice !== null && typeof body.tool_choice === 'object')
   const first = await driver.chat(prompt, opts)
-  if (first.error && !first.reply) return { reply: first.reply, calls: null, error: first.error, threadUrl: first.threadUrl }
+  // A driver error means this turn did not complete, so the text beside it is not a
+  // validated answer. Fail instead of parsing it into a tool call or a reply.
+  if (first.error) return { reply: '', calls: null, error: first.error, threadUrl: first.threadUrl }
 
   const parsed = parseToolCallsDetailed(first.reply, body.tools, body.tool_choice)
   if (parsed.calls) return { reply: first.reply, calls: parsed.calls, error: null, threadUrl: first.threadUrl }
@@ -558,11 +562,17 @@ async function requestToolCalls(prompt, opts, body) {
 
   const second = await driver.chat(correction, { ...opts, newThread: false })
   if (second.error && !second.reply) {
+    // The retry carried the correction, so its failure means the first reply was never
+    // validated. Returning that reply would pass off a rejected or fabricated answer
+    // as success, which is exactly what the tool_choice and sandbox guards prevent.
+    log('corrective retry failed:', second.error)
     return {
-      reply: first.reply,
+      reply: '',
       calls: null,
-      error: requiresTool ? 'the model did not return a tool call required by tool_choice' : null,
-      threadUrl: second.threadUrl || first.threadUrl,
+      error: requiresTool
+        ? `tool_choice requires a tool call, but the corrective retry failed: ${second.error}`
+        : `the corrective retry failed before producing an answer: ${second.error}`,
+      threadUrl: first.threadUrl || second.threadUrl,
     }
   }
   const retried = parseToolCallsDetailed(second.reply, body.tools, body.tool_choice)
@@ -669,23 +679,30 @@ async function handleChat(req, res, body) {
     const known = wantNewThread ? null : threadStore().get(threadKey)
     if (known) {
       chatTarget = known
-    } else if (pendingCreates.has(threadKey)) {
-      // A sibling request is already creating this conversation's Side chat.
-      // Queue behind it instead of creating a second, orphaned thread.
-      await pendingCreates.get(threadKey)
-      const bound = threadStore().get(threadKey)
-      if (bound) chatTarget = bound
-      else wantNewThread = true
     } else {
-      // Unknown conversation: always open a fresh Side chat. Never fall back to the
-      // currently open chat, otherwise two host conversations would share a context.
-      wantNewThread = true
-      let release
-      const pending = new Promise((resolve) => { release = resolve })
-      pendingCreates.set(threadKey, pending)
-      releaseCreate = () => {
-        if (pendingCreates.get(threadKey) === pending) pendingCreates.delete(threadKey)
-        release()
+      // Exactly one request per key may open a Muse chat. A waiter whose creator failed
+      // loops and takes the lock itself; otherwise several waiters would each create a
+      // thread and the conversation would jump between them.
+      for (;;) {
+        const pending = pendingCreates.get(threadKey)
+        if (pending) {
+          await pending
+          const bound = threadStore().get(threadKey)
+          if (bound) {
+            chatTarget = bound
+            break
+          }
+          continue
+        }
+        wantNewThread = true
+        let release
+        const mine = new Promise((resolve) => { release = resolve })
+        pendingCreates.set(threadKey, mine)
+        releaseCreate = () => {
+          if (pendingCreates.get(threadKey) === mine) pendingCreates.delete(threadKey)
+          release()
+        }
+        break
       }
     }
   } else if (!explicitThread && mode === 'new') {
@@ -752,7 +769,9 @@ async function handleChat(req, res, body) {
       if (wantTools) {
         // Buffer so we can decide tool_calls vs content before emitting.
         const r = await requestToolCalls(prompt, chatOpts, body)
-        if (r.error && !r.reply) throw new Error(r.error)
+        // Any driver error is fatal here: the reply was never validated, so it must not
+        // be streamed as an answer.
+        if (r.error) throw new Error(r.error)
         bindThread(r)
         if (r.calls && r.calls.length) {
           const deltas = r.calls.map((c, i) => ({
@@ -797,7 +816,7 @@ async function handleChat(req, res, body) {
     const r = wantTools
       ? await requestToolCalls(prompt, chatOpts, body)
       : await driver.chat(prompt, chatOpts)
-    if (r.error && !r.reply) throw new Error(r.error)
+    if (r.error) throw new Error(r.error)
     bindThread(r)
     const calls = r.calls
 

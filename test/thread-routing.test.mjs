@@ -241,6 +241,41 @@ test('a fail-closed result never binds the thread it refused to use', async () =
   }))
 })
 
+test('three concurrent requests recover to one thread after the first creation fails', async () => {
+  let attempts = 0
+  await withShim(async ({ base, dir }) => {
+    const responses = await Promise.all([
+      post(base, { model: 'muse', messages: [{ role: 'user', content: 'session one' }] }),
+      post(base, { model: 'muse', messages: [{ role: 'user', content: 'session one' }] }),
+      post(base, { model: 'muse', messages: [{ role: 'user', content: 'session one' }] }),
+    ])
+    const statuses = responses.map((r) => r.status).sort()
+    assert.deepEqual(statuses, [200, 200, 502])
+
+    // One failed creation plus exactly one successful creation: waiters must take turns
+    // instead of each opening a new Muse chat once the lock is released.
+    assert.equal(attempts, 2)
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, '.muse-threads.json'), 'utf8'))
+    assert.equal(saved.threads['session:ses_default'].threadId, THREAD_A)
+  }, async (prompt, opts = {}) => {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    if (opts.newThread) {
+      attempts += 1
+      if (attempts === 1) {
+        return {
+          reply: '',
+          threadUrl: 'https://muse.ai/',
+          threadId: null,
+          error: 'the new-side-chat control did not open a new thread',
+          threadUnavailable: true,
+        }
+      }
+      return { reply: 'ok', threadUrl: `https://muse.ai/thread/${attempts === 2 ? THREAD_A : THREAD_B}` }
+    }
+    return { reply: 'ok', threadUrl: `https://muse.ai/thread/${opts.chat}` }
+  })
+})
+
 test('the isolation guard is added to session-routed prompts', async () => {
   await withShim(async ({ base, calls }) => {
     await send(base, 'session one')

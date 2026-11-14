@@ -76,8 +76,25 @@ test('a reply that claims another working directory is treated as a tool result 
   assert.equal(claimsHostToolResult('42', messages), false)
 })
 
-test('an ordinary prose answer is not retried', async () => {
-  let calls = 0
+test('general path mentions are not treated as tool results', () => {
+  const messages = [hostEnv, { role: 'user', content: 'explain where configs live' }]
+  assert.equal(claimsHostToolResult('在 macOS 上，設定檔通常位於 /Users/example/Library/Preferences。', messages), false)
+  assert.equal(claimsHostToolResult('```bash\ncd /home/user/project\nls\n```', messages), false)
+})
+
+test('a claimed listing under a foreign root is still caught', () => {
+  const messages = [hostEnv, { role: 'user', content: '目錄內容？' }]
+  assert.equal(claimsHostToolResult('目前工作目錄 /home/hatch，前 5 個檔案：\n\nAGENTS.md', messages), true)
+  assert.equal(claimsHostToolResult('目錄內容：\n/Users/example/notes.txt', messages), true)
+})
+
+test('fictional filenames without a directory claim are not guessed at', () => {
+  const messages = [hostEnv, { role: 'user', content: 'what files?' }]
+  // Documented limitation: without a directory claim there is no reliable signal.
+  assert.equal(claimsHostToolResult('檔案有 alpha.txt、beta.txt 兩個。', messages), false)
+})
+
+test('an ordinary prose answer is not retried', async () => {  let calls = 0
   await withStubbedShim(
     () => { calls += 1; return '42' },
     async (base) => {

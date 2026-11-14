@@ -81,6 +81,17 @@ test('SSE: an error after partial output is delivered as an SSE error event', as
   })
 })
 
+test('non-stream: an error accompanying a reply is still an HTTP error', async () => {
+  // The streaming path already fails on any driver error. A non-empty reply must not
+  // make the same failure look like a normal answer when the caller did not stream.
+  await withShim(async (base) => {
+    const res = await post(base, { model: 'muse', messages: [{ role: 'user', content: 'hi' }] })
+    assert.equal(res.status, 502)
+    const text = await res.text()
+    assert.doesNotMatch(text, /partial answer/)
+  }, { chat: async () => ({ reply: 'partial answer', error: 'page crashed' }) })
+})
+
 test('SSE: tool_choice=required without a tool call returns an HTTP error', async () => {
   await withShim(async (base) => {
     const res = await post(base, {

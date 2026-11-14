@@ -423,8 +423,13 @@ class MuseDriver {
     else await this.gotoApp()
     await this.waitForComposer()
 
-    // Clear any transient error notice.
+    // Clear any transient error notice. A notice left from an earlier turn is still in
+    // the transcript, so mark the ones already present; only a notice that appears after
+    // this send can describe the current reply.
     this.lastError = null
+    await p.locator(SELECTORS.errorNotice).evaluateAll((els) => {
+      for (const el of els) el.setAttribute('data-muse-stale', '1')
+    }).catch(() => {})
 
     // Attach images/videos/files (if any) before typing the prompt.
     if (hasFiles) {
@@ -493,8 +498,9 @@ class MuseDriver {
         }
         if (stop === 0 && ((started && idle > 1200) || (!started && idle > 2500))) break
       }
-      if (await p.locator(SELECTORS.errorNotice).count()) {
-        this.lastError = await p.locator(SELECTORS.errorNotice).first().innerText().catch(() => 'assistant error')
+      const fresh = p.locator(`${SELECTORS.errorNotice}:not([data-muse-stale])`)
+      if (await fresh.count()) {
+        this.lastError = await fresh.first().innerText().catch(() => 'assistant error')
       }
       await sleep(300)
     }
