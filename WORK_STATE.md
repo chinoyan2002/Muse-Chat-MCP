@@ -9,8 +9,8 @@
 |---|---|
 | Branch | `fix/opencode-tool-calling` |
 | 第三輪基準 | `34cd995`（本輪以前） |
-| 本輪提交 | `c159a57`（修正＋測試）、`570bb61`（文件） |
-| 追蹤分支 | `fork/fix/opencode-tool-calling`（遠端 HEAD `570bb61`，已同步） |
+| 本輪提交 | `c159a57`（修正＋測試）、`570bb61`（文件）與後續文件提交（含本檔） |
+| 追蹤分支 | `fork/fix/opencode-tool-calling`（已同步；實際 HEAD 以 `git log -1` 與 `git ls-remote` 為準） |
 | 未提交 | 無（僅刻意不追蹤的 `acceptance-*.mjs`、`muse-login.mjs`） |
 
 ## 最後一個 VERIFIED 任務
@@ -62,6 +62,7 @@
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
+| GitHub Actions（commit `c75ec4e`，run 43594541679） | 4/4 jobs success（純文件提交仍跑完整矩陣） |
 | GitHub Actions（commit `570bb61`，run 43594290747） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | GitHub Actions（commit `34cd995`，run 43590192594） | success（4/4 matrix jobs） |
 | GitHub Actions（commit `3fdb492`，run 43590078913） | 4/4 jobs success：node 22/24 × ubuntu/windows |
