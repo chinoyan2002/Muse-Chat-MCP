@@ -1,6 +1,6 @@
 # Muse-Chat-MCP 工作狀態
 
-> 最後更新：2026-11-14 20:36（UTC+8）
+> 最後更新：2026-11-14 21:20（UTC+8）
 > 專案目錄：`C:\Users\User\Muse-Chat-MCP`
 
 ## Git
@@ -11,27 +11,27 @@
 | 第三輪基準 | `34cd995`（本輪以前） |
 | 本輪提交 | `c159a57`（修正＋測試）、`570bb61`（文件）與後續文件提交（含本檔） |
 | 追蹤分支 | `fork/fix/opencode-tool-calling`（已同步；實際 HEAD 以 `git log -1` 與 `git ls-remote` 為準） |
-| 未提交 | 本次文件更新（`WORK_STATE.md`、`WORK_PLAN.md`）；程式已全部提交 |
+| 未提交 | 第四輪修改：`muse-openai-shim.mjs`、`test/retry-failure.test.mjs`、`test/tool-calling.test.mjs`、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md` |
 
 ## GitHub 同步狀態（2026-11-14 20:36 查詢）
 
 | 項目 | 值 |
 |---|---|
-| 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | 一致（實值以 `git log -1`、`git ls-remote` 為準；20:36 查詢時皆為 `75826c2`，20:39 push 後皆為 `9229860`） |
+| 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | 一致（實值以 `git log -1`、`git ls-remote` 為準） |
 | PR #1 | open、**ready for review（非 draft）**、`mergeable: clean`、無審查留言 |
-| PR 內容 | 27 commits、21 files、+4265／−104（2026-11-14 20:39 查詢） |
+| PR 內容 | 32 commits、21 files（2026-11-14 21:10 查詢；之後的修正會再增加） |
 | base `main` | `6c00e8c`（未變動） |
 | 說明已對齊 | PR 本文已改為 73 tests、run 43597353526、Desktop 已驗與未驗清單（2026-11-14 21:05） |
 
 ## 最後一個 VERIFIED 任務
 
-**T32（新對話被導回別的 session 的 thread）**，`npm test` 73/73。
+**T34（第二次仍無效的 tool call 不再當文字）**，`npm test` 83/83。
 
-證據（2026-11-14 21:00，Node v24.19.0 / Windows 11）：
+證據（2026-11-14 21:20，Node v24.19.0 / Windows 11）：
 
-- 修正前：`thread-routing` 的新案例回 200 並把子 session 綁到父 thread；`thread-map` 因 `keysFor` 不存在而失敗。
-- 修正後：子 session 回 502，訊息為 `Muse returned thread … which already belongs to session:ses_parent`；map 只有父的一筆。
-- 同一批的 T27–T29 仍全過。
+- 第四輪新增 9 項測試（`retry-failure` G–O）；修正前 G–N 共 8 項失敗，O 為既有行為。
+- `tool-calling` 的「未知工具名稱」改為預期 502（契約變更，依審查要求）。
+- 第三輪的 T27–T29、T32 仍全過。
 
 - T27：`test/retry-failure.test.mjs` 7 項，修正前全數失敗，修正後全過。
 - T28：`thread-routing` 併發恢復測試，修正前 `attempts=3`，修正後 `attempts=2`。
@@ -67,13 +67,15 @@
 | T24 | VERIFIED | 協議加入宿主平台與沙箱警語 |
 | T25 | VERIFIED | 無 code-mode 工具時移除其目錄 |
 | T26 | VERIFIED | 重啟後 Desktop 三步驟通過（read 工具實際執行） |
-| T32 | VERIFIED | 新對話若被導回別人的 thread → 502、不綁定（自動測試；執行中的 shim 尚未重啟） |
+| T32 | VERIFIED | 新對話若被導回別人的 thread → 502、不綁定（21:01 已重啟載入；21:02 已清舊綁定） |
+| T33 | VERIFIED | 第二次重試帶 error 一律失敗；partial reply／tool call 都不回傳 |
+| T34 | VERIFIED | 第二次仍無效的 tool call 不再當一般文字；auto 的純散文仍可接受 |
 
 ## 驗證指令與結果
 
 | 指令 | 結果 |
 |---|---|
-| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 73/73 pass |
+| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 83/83 pass |
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
@@ -157,6 +159,7 @@
 - 同日 12:18Z 以 WMI 重新啟動 shim（node PID `33524`），本輪修正已生效。
 - 21:00 追加 T32：實機發現子代理拿到父對話的 thread。修正在綁定前檢查 thread 是否已屬於別的 key，是就 502；driver 先把「點擊前的 thread」等穩定。新增 2 個測試（修正前皆失敗）。21:01 依使用者授權重啟（PID `23364`），新碼已生效。21:02 刪除 `ses_e25efd2c…` 與 legacy 雜湊鍵的綁定（備份 `.muse-threads.json.bak-20261114-210224`），再次重啟（PID `33092`）；map 現 26 筆、無共用 thread。
 - 21:05 PR #1 本文更新為 73 tests、run 43597353526，並以 GraphQL `markPullRequestReadyForReview` 改為 ready（非 draft）。
+- 21:20 第四輪追加 T33／T34：第二次重試只要帶 `error` 就失敗（不再看 reply 是否為空），第二次仍是無效 tool call 時回 502 而不是當文字。`retry-failure` 新增 9 項，修正前 8 項失敗。
 
 ## 下一個動作
 

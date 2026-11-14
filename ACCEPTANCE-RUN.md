@@ -369,8 +369,38 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 | E. 平行 Tool Call、Tool Result Continuation | Continuation 已於 §12.4 通過；平行呼叫待重測 |
 | F. 拒答／假結果重試失敗不得當成功 | 自動測試已覆蓋；實機待做 |
 
-### 13.4 實機使用中的新發現（2026-11-14T12:37–12:39Z，已修、尚未載入執行中的行程）
+### 13.4 實機使用中的新發現（2026-11-14T12:37–12:39Z，已修並已載入）
 
 使用者只開了一個對話，OpenCode 自行建立子代理（`ses_e25efd2c…`）；該子代理的 `thread=new` 請求在 12:39:12.410Z 綁到父對話的 thread `ad0cb826…`。這與「一個 session 一個 thread」不符。
 修正：`muse-openai-shim.mjs:725-741` 在寫入 map 前檢查該 thread 是否已屬於其他 key，若是則回 502 且不綁定；`muse-driver.mjs:236-240` 先等路由穩定再記錄「點擊前的 thread」。
 測試：`thread-routing` 新增「子 session 取得父 thread → 502、map 不新增」，`thread-map` 新增 `keysFor`；兩者在修正前皆失敗。§12.4 的 A/B 兩個不同 thread 結論不受影響。
+
+後續（2026-11-14 21:01–21:02）：
+
+- 修正已 push 到 fork（`d4c6952`）。
+- 21:01 重啟 shim 載入新程式（PID 23364），21:02 為清 map 再次重啟（PID 33092）。
+- 21:02 備份 `.muse-threads.json.bak-20261114-210224`，刪除子代理與 legacy 雜湊鍵的綁定；現 26 筆，沒有已知的共用 thread。
+
+## 14. 第四輪追加修正（2026-11-14 21:20）
+
+基準 `5577187`。
+
+### 14.1 修正內容
+
+| 項目 | 修正 | 測試 |
+|---|---|---|
+| P1 第二次重試帶 error | `requestToolCalls` 的第二次 driver 回傳只要含 `error`，一律回 `reply:''` 與明確 error；partial 文字與 tool call 都不採用，也不再檢查 reply 是否為空 | `retry-failure` G–K |
+| P1 Thread Map 與鎖 | 失敗在 `bindThread` 之前就拋出，map 不新增也不覆蓋；`pendingCreates` 於 catch 釋放，下一請求可正常建立 | `retry-failure` B（改為斷言未綁定）與鎖釋放案例 |
+| P2 第二次仍無效的 tool call | `parseToolCallsDetailed` 回 `attempted` 但沒有 calls 時回 502，不再把原始 JSON 當一般文字 | `retry-failure` L–N |
+| P2 契約邊界 | auto 模式下第二次是純散文（未嘗試 tool call）仍可接受；`required` 必須有有效 tool call | `retry-failure` O、C、J；`tool-calling` 未知名稱改為預期 502 |
+
+### 14.2 證據
+
+- `npm test`：83 tests / 83 pass / 0 fail（Node v24.19.0、Windows 11）。
+- 修正前：G–N 共 8 項失敗；`tool-calling` 的未知名稱案例因契約變更同步改寫為 502。
+- `git diff --check`：乾淨。
+
+### 14.3 尚未完成
+
+- 實機驗收 A–F 不變，仍為 PENDING，不得標記 VERIFIED。
+- CI 於 push 後執行。

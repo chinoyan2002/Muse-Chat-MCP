@@ -364,7 +364,7 @@ opencode, Cursor, Cline, Aider, … anything that can read files.
 
 `npm test` runs the built-in Node test runner — no browser and no Muse login needed. The suite covers
 tool-call parsing and repair, recursive schema validation, thread routing and isolation, fail-closed
-thread creation, SSE and non-stream error handling, and the MCP zod schema round-trip (73 tests).
+thread creation, SSE and non-stream error handling, and the MCP zod schema round-trip (83 tests).
 CI runs it on Ubuntu and Windows with Node 22 and Node 24, installing the committed lockfile with
 `npm ci`.
 

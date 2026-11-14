@@ -1,6 +1,6 @@
 # Muse-Chat-MCP 工作計畫
 
-> 最後更新：2026-11-14 02:14（UTC+8）
+> 最後更新：2026-11-14 21:20（UTC+8）
 > 分支：`fix/opencode-tool-calling`（追蹤 `fork/fix/opencode-tool-calling`）
 > 範圍：把 Meta Muse 接到 OpenCode，並修正實機測試發現的阻斷問題。
 
@@ -57,6 +57,8 @@
 | T30 | 第三輪 P4：文件與 PR 說明同步 | VERIFIED | 文件已 push；PR 本文改為 73 tests、run 43597353526，並改為 ready for review |
 | T31 | 剩餘實機驗收（T6b、T6d、T6e、T6f 平行、T6g） | PENDING | 需使用者同意後進行 |
 | T32 | 第三輪追加：新對話被導回別的 session 的 thread | VERIFIED | `thread-routing` 新案例：子 session 取得父 thread → 502、map 不新增；`thread-map` 新增 `keysFor` |
+| T33 | 第四輪 P1：第二次重試帶 error 一律失敗 | VERIFIED | 7 項測試（G–K＋鎖釋放＋map 不綁定）；partial reply／tool call 都不回傳 |
+| T34 | 第四輪 P2：第二次仍無效的 tool call 不得當文字 | VERIFIED | `retry-failure` L–O；malformed JSON／未知名稱／參數不符皆 502，auto 散文仍可接受 |
 
 ## 3. 已知限制
 
@@ -68,3 +70,6 @@
 
 - 2026-11-14：新增 T3、T4、T5，修正併發綁定與散文拒答。
 - 2026-11-14 02:14：PR #1 第二輪審查，新增 T14–T20；`zod` 升級、lockfile、CI matrix、SSE 錯誤、schema 驗證。
+- 2026-11-14 20:30：第三輪審查，新增 T27–T31；重試失敗不得當成功、併發建立恢復、假結果偵測邊界、文件同步。
+- 2026-11-14 21:00：第三輪追加 T32；新對話被導回別人的 thread 時回 502，不再共用。21:01 重啟載入，21:02 清理舊綁定。
+- 2026-11-14 21:20：第四輪追加 T33／T34；第二次重試只要帶 error 就失敗（含 partial reply／tool call），第二次仍無效的 tool call 不再當一般文字回傳。
