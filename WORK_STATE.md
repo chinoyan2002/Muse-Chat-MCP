@@ -17,9 +17,9 @@
 
 | 項目 | 值 |
 |---|---|
-| 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | `75826c2`（`git ls-remote` 與 API 一致） |
+| 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | 一致（實值以 `git log -1`、`git ls-remote` 為準；20:36 查詢時皆為 `75826c2`，20:39 push 後皆為 `9229860`） |
 | PR #1 | open、draft、`mergeable: clean`、無審查留言 |
-| PR 內容 | 26 commits、21 files、+4252／−104 |
+| PR 內容 | 27 commits、21 files、+4265／−104（2026-11-14 20:39 查詢） |
 | base `main` | `6c00e8c`（未變動） |
 | 尚未對齊 | PR 說明仍是舊文字（寫 10 tests）；需 token 或由使用者貼上，`gh` 未安裝 |
 
