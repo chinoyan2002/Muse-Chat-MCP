@@ -403,4 +403,4 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 ### 14.3 尚未完成
 
 - 實機驗收 A–F 不變，仍為 PENDING，不得標記 VERIFIED。
-- CI 於 push 後執行。
+- CI：[run 43599849264](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43599849264)（`7f8e3be`）四組合全過。

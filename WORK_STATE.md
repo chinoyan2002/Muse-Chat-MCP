@@ -19,9 +19,9 @@
 |---|---|
 | 本機 HEAD ＝ `fork` 遠端分支 ＝ PR #1 head | 一致（實值以 `git log -1`、`git ls-remote` 為準） |
 | PR #1 | open、**ready for review（非 draft）**、`mergeable: clean`、無審查留言 |
-| PR 內容 | 32 commits、21 files（2026-11-14 21:10 查詢；之後的修正會再增加） |
+| PR 內容 | 34 commits、21 files（2026-11-14 21:25 查詢） |
 | base `main` | `6c00e8c`（未變動） |
-| 說明已對齊 | PR 本文已改為 73 tests、run 43597353526、Desktop 已驗與未驗清單（2026-11-14 21:05） |
+| 說明已對齊 | PR 本文已改為 83 tests、run 43599849264、Desktop 已驗與未驗清單（2026-11-14 21:25） |
 
 ## 最後一個 VERIFIED 任務
 
@@ -79,6 +79,7 @@
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
+| GitHub Actions（commit `7f8e3be`，run 43599849264） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | GitHub Actions（commit `75826c2`，run 43594662737） | 4/4 jobs success（純文件提交仍跑完整矩陣） |
 | GitHub Actions（commit `c75ec4e`，run 43594541679） | 4/4 jobs success（純文件提交仍跑完整矩陣） |
 | GitHub Actions（commit `570bb61`，run 43594290747） | 4/4 jobs success：node 22/24 × ubuntu/windows |
@@ -159,6 +160,7 @@
 - 同日 12:18Z 以 WMI 重新啟動 shim（node PID `33524`），本輪修正已生效。
 - 21:00 追加 T32：實機發現子代理拿到父對話的 thread。修正在綁定前檢查 thread 是否已屬於別的 key，是就 502；driver 先把「點擊前的 thread」等穩定。新增 2 個測試（修正前皆失敗）。21:01 依使用者授權重啟（PID `23364`），新碼已生效。21:02 刪除 `ses_e25efd2c…` 與 legacy 雜湊鍵的綁定（備份 `.muse-threads.json.bak-20261114-210224`），再次重啟（PID `33092`）；map 現 26 筆、無共用 thread。
 - 21:05 PR #1 本文更新為 73 tests、run 43597353526，並以 GraphQL `markPullRequestReadyForReview` 改為 ready（非 draft）。
+- 21:25 第四輪 push（`7d16d93`、`7f8e3be`）；CI run 43599849264 四組合全過；PR 本文改為 83 tests。
 - 21:20 第四輪追加 T33／T34：第二次重試只要帶 `error` 就失敗（不再看 reply 是否為空），第二次仍是無效 tool call 時回 502 而不是當文字。`retry-failure` 新增 9 項，修正前 8 項失敗。
 
 ## 下一個動作
