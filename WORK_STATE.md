@@ -1,6 +1,6 @@
 # Muse-Chat-MCP 工作狀態
 
-> 最後更新：2026-11-14 19:25（UTC+8）
+> 最後更新：2026-11-14 20:30（UTC+8）
 > 專案目錄：`C:\Users\User\Muse-Chat-MCP`
 
 ## Git
@@ -8,21 +8,19 @@
 | 項目 | 值 |
 |---|---|
 | Branch | `fix/opencode-tool-calling` |
-| 程式提交 | `8e1d816`（`fix(shim): key threads by the unique session id and fail closed`） |
-| 文件提交 | 本次（`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md`）；以 `git log -1` 為準 |
-| 追蹤分支 | `fork/fix/opencode-tool-calling`（遠端 HEAD `31134f4`） |
-| 未提交 | `muse-openai-shim.mjs`、`test/tool-prose-claims.test.mjs`（新）、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md` |
+| 第三輪基準 | `34cd995`（GitHub 與本機一致；本輪提交見 `git log`） |
+| 追蹤分支 | `fork/fix/opencode-tool-calling`（本輪 push 後才同步） |
+| 未提交 | 本輪修改：`muse-openai-shim.mjs`、`test/retry-failure.test.mjs`（新）、`test/thread-routing.test.mjs`、`test/tool-prose-claims.test.mjs`、`README.md`、`ACCEPTANCE-RUN.md`、`WORK_PLAN.md`、`WORK_STATE.md` |
 
 ## 最後一個 VERIFIED 任務
 
-**T26（重啟後重跑 Desktop 三步驟）**。
+**T29（假結果偵測邊界）**，本輪 T27–T29 全部通過 `npm test` 71/71。
 
-證據（2026-11-14 19:22，新 session、build agent）：
+證據（2026-11-14 20:xx，Node v24.19.0 / Windows 11）：
 
-- A：`ses_e2634a5e…` → `8b1462c1…`；OpenCode session 有 `tool read {"path":"C:/Users/User/Muse-Chat-MCP","limit":5}`，結果為實際專案目錄。
-- shim 日誌：11:22:25 `thread=new` → 11:23:02 綁定 → 11:23:02.702 同一 thread 第二次請求（工具結果續傳）→ 11:24:28 第三次（FIX-820）。
-- B：`ses_e2633d69…` → `8631afde…`；回 `UNKNOWN`。
-- 同批 T22–T25 單元測試 59/59。
+- T27：`test/retry-failure.test.mjs` 7 項，修正前全數失敗，修正後全過。
+- T28：`thread-routing` 併發恢復測試，修正前 `attempts=3`，修正後 `attempts=2`。
+- T29：一般路徑說明、程式碼片段不誤判；宣稱 `/home/hatch` 目錄列表仍攔截。
 
 ## 任務狀態
 
@@ -33,14 +31,14 @@
 | T3 | VERIFIED | 併發首請求只建一個 thread |
 | T4 | VERIFIED | 散文拒答重試（`044db70`） |
 | T5 | VERIFIED | 日誌時間戳／例外記錄 |
-| T6 | PENDING | Desktop GUI 人工驗收＋PR 審查 A–J |
+| T6 | IN_PROGRESS | Desktop 三步驟已通過（T6a/T6c）；T6b/T6d/T6e/T6g 尚未實機，T6f 平行呼叫待重測 |
 | T7 | VERIFIED | `zod@4.6.7`、audit 0、`mcp-schema` 測試通過 |
 | T8 | VERIFIED | Side chat 建立失敗改 fail closed |
 | T9 | VERIFIED | 以唯一 session id（`x-opencode-session-id`）識別 |
 | T10 | VERIFIED | 只接受 `/thread/new`；送出後驗證 uuid |
 | T11 | VERIFIED | `tool_choice: required` 契約 |
 | T12 | VERIFIED | Windows 路徑控制字元 |
-| T13 | VERIFIED | Node 24 完整測試（現 52/52） |
+| T13 | VERIFIED | Node 24 完整測試（現 71/71） |
 | T14 | VERIFIED | session id 順序；缺 id 回 400 |
 | T15 | VERIFIED | SSE 錯誤處理 |
 | T16 | VERIFIED | fail-closed 測試補強 |
@@ -59,28 +57,31 @@
 
 | 指令 | 結果 |
 |---|---|
-| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 59/59 pass |
+| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 71/71 pass |
 | `node --check muse-openai-shim.mjs` / `muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0 |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
-| GitHub Actions（commit `31134f4`，run 43483204976） | 4/4 jobs success：node 22/24 × ubuntu/windows |
+| GitHub Actions（commit `34cd995`，run 43590192594） | success（4/4 matrix jobs） |
 | GitHub Actions（commit `3fdb492`，run 43590078913） | 4/4 jobs success：node 22/24 × ubuntu/windows |
 | 路徑解析實測 | naive JSON.parse 得到 char codes 67,58,9,101…（TAB、LF）；shim 得 `C:\temp\new` |
 | CLI 兩輪（新 session，上一輪） | `OK` → `FRESH-900`，同一 thread |
 | `acceptance-threads.mjs`（上一輪） | 4 項全 true（`E:\Temp\opencode\accept-threads-review.log`） |
 
-尚未執行：Node 22 與 Windows runner 的 CI（要 push 後由 Actions 跑）。
+本輪修改尚未 push，CI 需 push 後才會跑。
 
 ## 執行中服務
 
 - shim 由 `E:\Temp\opencode\start-muse-shim.cmd` 啟動（WMI 建立，非 shell 子行程）。
 - 日誌：`E:\Temp\opencode\muse-shim.err.log`。
+- 目前行程：node PID `33524`（cmd 啟動器 PID `34436`），2026-11-14T12:18:08Z 開始監聽 `127.0.0.1:8787`。
+- 前一個行程（PID 34592）在下一次操作前已不存在，8787 無監聽者；日誌無崩潰記錄，原因未確認。本輪修正因此是重新啟動後才生效。
+- 啟動後 `/health` → `ok:true`、`browserRunning:false`、`loggedIn:false`；`/v1/models` 回三個 id。尚未有瀏覽器請求，故 `loggedIn:false` 屬預期。
 
 ## 已知風險
 
 1. 舊綁定以內容雜湊為鍵，改用 session id 後不再命中：**既有 OpenCode session 下一次送出會開新對話**，Muse 端先前記憶不延續。
 2. 若「新副聊天室」控制失效，請求會直接失敗（fail closed），需改 `MUSE_THREAD_MODE=single` 才能繼續。
-3. 先前 shim 曾於約 29 分鐘後無聲結束（原因未確認）；目前以 WMI 啟動，長時間穩定性未驗證。
+3. shim 已兩次無聲結束（原因未確認；最近一次在 2026-11-14 11:24Z 之後、20:17 之前，日誌無錯誤）。目前以 WMI 啟動，長時間穩定性未驗證；結束後 `muse-local` 會直接連線失敗。
 4. 隔離提示不是硬邊界。
 
 ## 2026-11-14 02:14 第二輪審查
@@ -104,7 +105,7 @@
 - A 第三步回到同一 thread，回 `GUI-715` → 連續性通過。
 - 工具失敗：A 第一回合只有一次 shim 請求、沒有工具結果的第二次請求；OpenCode session 該回合只有 `text`，沒有 `tool` 區塊；畫面沒有工具卡。回覆的 `/home/hatch` 是 Muse 自己的沙箱。
 - OpenCode 端證據：session `agent: plan`、`location.directory: E:\Temp\opencode`；送給 Muse 的 system 約 38,430 字（含 Plan 提醒與 Code Mode browse 目錄）；`files=2` 來自歷史訊息附件被重送。
-- 已修正（未提交、需重啟才生效）：`collectFiles` 只看本輪、`claimsHostToolResult` 假結果偵測＋一次重試＋502、協議加入宿主平台與沙箱警語、無 code-mode 工具時移除其目錄。`npm test` 59/59。
+- 已修正（未提交、需重啟才生效）：`collectFiles` 只看本輪、`claimsHostToolResult` 假結果偵測＋一次重試＋502、協議加入宿主平台與沙箱警語、無 code-mode 工具時移除其目錄。`npm test` 59/59（當時）。
 
 ## 2026-11-14 02:00 併用事故與修復
 
@@ -124,8 +125,17 @@
 - 需要重啟或實機測試時，先詢問並取得同意；不自行判斷「看起來沒在用」。
 - 目前唯一待做的實機項目是 Desktop GUI 驗收（T6），由使用者操作，不需要我重啟服務。
 
+## 2026-11-14 20:30 第三輪審查
+
+- T27（P1）：`requestToolCalls` 第二次 driver 失敗時回 `reply:''`＋明確 error；不再保留第一次未驗證的回覆。新增 `test/retry-failure.test.mjs` 7 項，修正前全失敗。
+- T27a（P1 補強）：外層改為 `if (r.error) throw`，不再以「reply 非空」忽略錯誤；driver 只在**本輪新出現**的錯誤提示才算 error（舊回合殘留的提示已標記忽略），避免同一 thread 一次錯誤之後每輪都 502。新增 `sse-errors` 非串流錯誤案例。
+- T28（P2）：`pendingCreates` 改為「等待者失敗後重新取得鎖」的迴圈；三個併發請求在首次建立失敗後只重建一次（attempts 3 → 2），全部落在同一 thread。
+- T29（P3）：`/home`、`/Users` 只在回覆同時宣稱目錄列表時才視為假結果；一般路徑說明與程式碼片段不再誤判。虛構檔名（無目錄聲明）無法可靠判斷，已寫入 README 限制。
+- 文件：README 移除 `x-session-id` 宣稱、測試數 71；WORK_PLAN／WORK_STATE 的 T6 改為 IN_PROGRESS 並拆成 T6a–T6g；CI 更新為 run 43590192594。
+- 本輪未 push；PR 說明待更新（需使用者貼上或授權）。
+
 ## 下一個動作
 
-1. 使用者裁決是否 commit / push 本輪（T22–T26）修正並更新 PR #1 說明。
-2. 若要 push，建議 commit：`fix(shim): ignore foreign sandbox results and stale attachments`＋文件。
-3. 可選：以變體實驗隔離「Plan 模式／歷史附件」對工具呼叫的影響（非驗收必要）。
+1. 使用者裁決是否 commit / push 本輪（T27–T30）修正。
+2. 更新 PR #1 說明（測試數 71、4/4 matrix、Desktop 已驗與未驗項目）。
+3. 剩餘實機驗收 T31（T6b、T6d、T6e、T6f 平行、T6g）需使用者同意後進行。

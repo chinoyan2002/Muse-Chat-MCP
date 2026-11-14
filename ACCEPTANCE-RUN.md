@@ -235,7 +235,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 
 | 指令 | 結果 |
 |---|---|
-| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 52 tests / 52 pass / 0 fail（連續 10 次重跑 0 失敗） |
+| `npm test`（Node v24.19.0 / npm 11.17.0 / Windows 11） | 52 tests / 52 pass / 0 fail（當時；最新為 71/71） |
 | `node --check muse-openai-shim.mjs`、`muse-driver.mjs` | 0 / 0 |
 | `npm ci --dry-run` | exit 0（lockfile 完整可重現） |
 | `npm audit --json` | `vulnerabilities: {}`、exit 0 |
@@ -248,7 +248,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 - 修正後：`zod@4.6.7`，`vulnerabilities: {}`，exit 0；`@modelcontextprotocol/sdk@1.32.2` 宣告接受 `zod: "^3.25 || ^4.0"`，並以 `test/mcp-schema.test.mjs` 驗證 SDK 仍能註冊工具、列出 JSON Schema 並呼叫。
 - 原始輸出：`E:\Temp\opencode\audit.json`（修正前）、`E:\Temp\opencode\audit-after-zod4.json`（修正後）。
 
-未執行、不可宣稱通過：無（CI 四組合已於 `31134f4` 實跑成功）。
+CI 現況：run [43590192594](https://github.com/chinoyan2002/Muse-Chat-MCP/actions/runs/43590192594)（`34cd995`）success；本輪修正尚未 push，CI 待 push 後執行。
 
 ### 11.3 人工驗收清單（審查第 7 項 A–J）
 
@@ -278,7 +278,7 @@ opencode-cli run --model muse-local/muse-spark-1.3 --auto "請讀取目前工作
 
 ### 11.4 尚未完成 / 需裁決
 
-1. 上述人工驗收（A–J，尤其 Desktop GUI 三步驟）尚未執行。
+1. 人工驗收 A–J 僅完成部分（Desktop 三步驟）；進度見 §13.3。
 2. 本輪修正已 commit（程式 `8e1d816`；文件提交見 `git log`）並推上 `fork/fix/opencode-tool-calling`。
 3. PR #1 說明尚未更新（需使用者同意張貼）。
 
@@ -315,7 +315,7 @@ A 的回覆是「目前工作目錄 /home/hatch，前 5 個檔案：AGENTS.md…
 | 協議文字 | 加入 `Host platform` 與「你的沙箱不是主機、不得宣稱未經工具取得的結果」 | 同上 |
 | 提示過長 | 當工具清單沒有 code-mode 工具（browse/execute）時，移除 Code Mode 目錄 system 訊息 | 同上 |
 
-`npm test`：59 tests / 59 pass / 0 fail（Node v24.19.0、Windows 11）。
+`npm test`：59 tests / 59 pass / 0 fail（當時；最新 71/71）。
 
 ### 12.4 重跑結果（2026-11-14 19:22，新程式已載入）
 
@@ -338,5 +338,32 @@ CI：commit `3fdb492` 的 [run 43590078913](https://github.com/chinoyan2002/Muse
 - 上述修正已套用到執行中的 shim（PID 34592），Desktop 三步驟已在新 session 通過（12.4）。
 - 舊 session／Plan 模式的失敗原因只到「相關性」層級，尚未以變體實驗證明因果。
 
+## 13. 第三輪審查修正（2026-11-14 20:30）
 
+基準 `34cd995`。
 
+### 13.1 修正內容
+
+| 項目 | 修正 | 測試 |
+|---|---|---|
+| P1 重試失敗被當成功 | `requestToolCalls` 第二次 driver 失敗時回 `reply:''` 與明確 error；`requiresTool` 時訊息明示需要 tool call。外層不再以「reply 非空」忽略 error；只在 driver 回報**本輪**錯誤時才走 5xx，舊回合殘留的錯誤提示不會誤殺新回覆 | `test/retry-failure.test.mjs` A–F＋鎖釋放，共 7 項；`sse-errors` 新增非串流錯誤案例 |
+| P2 Thread 建立失敗的併發恢復 | 等待者醒來若無綁定會**重新取得鎖**；同一 session 永遠只有一個建立者 | `thread-routing` 三併發案例：修正前 `attempts=3`、修正後 `2` |
+| P3 假結果偵測邊界 | `/home`、`/Users` 僅在回覆同時宣稱目錄列表時才判定；一般說明與程式碼片段不誤判 | `tool-prose-claims` 新增 3 項（一般路徑、宣稱列表、虛構檔名） |
+| P4 文件一致性 | README 移除 `x-session-id`、測試數改 71、新增偵測限制；WORK_PLAN／WORK_STATE 的 T6 拆成 T6a–T6g；CI 更新 | `git diff` 核對 |
+
+### 13.2 證據
+
+- `npm test`：71 tests / 71 pass / 0 fail（Node v24.19.0、Windows 11）。
+- TDD：T27 的 7 項在修正前全數失敗；T28 修正前 `attempts=3`；T29 的邊界案例在放寬前會誤判。
+- `git diff --check`：乾淨。
+
+### 13.3 剩餘實機驗收（尚未完成，不得標記 VERIFIED）
+
+| 項目 | 狀態 |
+|---|---|
+| A. A/B 使用完全相同第一句仍開兩個 thread | 待做 |
+| B. 同 session 後續訊息回原 thread | 已於 §12.4 通過（A 第三步） |
+| C. Child Session / Subagent 獨立 thread | 待做（自動測試 C 已覆蓋） |
+| D. Side chat 建立失敗時 Desktop 顯示錯誤 | 待做（自動測試已覆蓋 502） |
+| E. 平行 Tool Call、Tool Result Continuation | Continuation 已於 §12.4 通過；平行呼叫待重測 |
+| F. 拒答／假結果重試失敗不得當成功 | 自動測試已覆蓋；實機待做 |
